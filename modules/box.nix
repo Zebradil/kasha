@@ -55,9 +55,17 @@ in
     # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-
     # activated, so gate the socket (not just the service) and run at boot: a bad
     # mount fails the box loudly at boot instead of quietly on the first request.
+    #
+    # harmonia.socket lives in early-boot sockets.target, which is ordered *before*
+    # basic.target. A unit with default dependencies is ordered *after* basic.target,
+    # so gating the socket from there forms an ordering cycle (systemd then drops the
+    # socket). Opt out of default deps and order the guard right after the store is
+    # mounted; the socket's Requires= (requiredBy below) pulls it into the boot
+    # transaction, so failure still stops the box loudly at boot.
     systemd.services.kasha-box-store-guard = {
       description = "kasha box: reject NFS-backed nix store (ADR-0002)";
-      wantedBy = [ "multi-user.target" ];
+      unitConfig.DefaultDependencies = false;
+      after = [ "local-fs.target" ];
       before = [ "harmonia.socket" "harmonia.service" ];
       requiredBy = [ "harmonia.socket" "harmonia.service" ];
       environment.KASHA_STORE_DIR = cfg.storeDir;

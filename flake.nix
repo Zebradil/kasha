@@ -18,7 +18,7 @@
 
       devShells = forAllSystems ({ pkgs, ... }: {
         default = pkgs.mkShellNoCC {
-          packages = [ pkgs.shellcheck pkgs.shfmt pkgs.actionlint pkgs.jq pkgs.nixpkgs-fmt ];
+          packages = [ pkgs.shellcheck pkgs.shfmt pkgs.actionlint pkgs.jq pkgs.awscli2 pkgs.nixpkgs-fmt ];
         };
       });
 
@@ -38,8 +38,14 @@
 
           # The env-in -> stdout-out fixture pattern every reusable tool uses.
           fixtures = pkgs.runCommand "fixture-tests"
-            { nativeBuildInputs = [ pkgs.bash pkgs.coreutils ]; } ''
-            cd ${self}
+            { nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.jq ]; } ''
+            # Copy writable so patchShebangs can fix fixture fakes' `/usr/bin/env`
+            # shebang — it doesn't exist in the sandbox, and fakes are exec'd via PATH.
+            mkdir src
+            cp -r ${self}/tests ${self}/scripts src/
+            chmod -R u+w src
+            cd src
+            patchShebangs tests/fixtures
             bash tests/run.sh
             touch $out
           '';

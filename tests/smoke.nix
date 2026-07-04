@@ -6,6 +6,10 @@
 { pkgs, boxModule }:
 let
   port = 5000;
+  # An INPUT-addressed path: substitution genuinely requires a trusted signature,
+  # unlike a `nix-store --add` (content-addressed) path which self-verifies by hash
+  # and would make the wrong-key gate vacuous. This mirrors real upstream paths.
+  seed = pkgs.runCommand "kasha-seed" { } "echo hello-kasha > $out";
 in
 pkgs.testers.runNixOSTest {
   name = "kasha-box-read-path";
@@ -18,6 +22,8 @@ pkgs.testers.runNixOSTest {
         inherit port;
       };
       nix.settings.experimental-features = [ "nix-command" ];
+      # Seed the box store with the input-addressed path (valid, unsigned).
+      virtualisation.additionalPaths = [ seed ];
     };
 
     client = { ... }: {
@@ -43,10 +49,9 @@ pkgs.testers.runNixOSTest {
     good_key = box.succeed("cat /root/pk").strip()
     wrong_key = box.succeed("cat /root/wpk").strip()
 
-    # Seed a path into the box store and sign it out-of-band (simulating a
-    # pre-signed upstream path). The box only serves; it never signs.
-    box.succeed("echo hello-kasha > /root/seed")
-    path = box.succeed("nix-store --add /root/seed").strip()
+    # Sign the seeded path out-of-band (simulating a pre-signed upstream path).
+    # The box only serves; it never signs in production (ADR-0004).
+    path = "${seed}"
     box.succeed(f"nix store sign --key-file /root/sk {path}")
 
     # Client does not have it yet.

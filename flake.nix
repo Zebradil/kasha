@@ -56,6 +56,12 @@
             inherit pkgs;
             boxModule = self.nixosModules.box;
           };
+
+          # Reverse flow: ssh-ng push -> serve immediately (issue #4).
+          push = import ./tests/push.nix {
+            inherit pkgs;
+            boxModule = self.nixosModules.box;
+          };
         });
 
       formatter = forAllSystems ({ pkgs, ... }: pkgs.nixpkgs-fmt);

@@ -12,13 +12,30 @@ signing key** (ADR-0004) — it serves upstream signatures as-is.
     enable = true;
     storeDir = "/nix";   # must be block storage (iSCSI PV), never NFS
     port = 5000;
+
+    # Trust the existing remote-cache key so pushed paths verify (require-sigs
+    # stays on — the box holds no private key, ADR-0004).
+    trustedPublicKeys = [ "znix.zebradil.dev:AAAA…" ];
+
+    # Reverse flow: LAN-speed ssh-ng push target. Authorized clients run
+    # `nix copy --to ssh-ng://kasha-push@box <path>`; the box serves the pushed
+    # path over HTTP immediately, no up-mirror in the loop.
+    push = {
+      enable = true;
+      authorizedKeys = [ "ssh-ed25519 AAAA… laptop" ];
+    };
   };
 }
 ```
 
-The serving logic is validated end-to-end by the `smoke` check
-(`tests/smoke.nix`): seed a signed path → client substitutes it from the box →
-signature verifies under the existing public key.
+The push user is a normal (non-root) account, so it is **not** a nix
+trusted-user: an untrusted push must present paths signed by a
+`trustedPublicKeys` key, which is exactly the `require-sigs` gate.
+
+Both paths are validated end-to-end by NixOS-VM checks: `smoke`
+(`tests/smoke.nix`) covers seed → serve → substitute → verify; `push`
+(`tests/push.nix`) covers signed push → serve-immediately, plus rejection of an
+unsigned push and the box holding no signing key.
 
 ## k3s
 

@@ -1,0 +1,9 @@
+{
+  "flake": "znix",
+  "gen": "20260704-abc123",
+  "timestamp": "2026-07-04T00:00:00Z",
+  "roots": [
+    "/nix/store/aaa-foo",
+    "/nix/store/bbb-bar"
+  ]
+}

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Fake `aws` (fixture only): assert the manifest is published to the right key
+# and endpoint (WANT_DEST / WANT_ENDPOINT from the fixture env). Mismatch ->
+# exit 1, which the tool propagates so expected.exit catches it. Consumes the
+# manifest on stdin.
+set -euo pipefail
+
+dest=""
+endpoint=""
+prev=""
+for a in "$@"; do
+	case "$prev" in
+	--endpoint-url) endpoint="$a" ;;
+	esac
+	case "$a" in
+	s3://*) dest="$a" ;;
+	esac
+	prev="$a"
+done
+cat >/dev/null
+
+[[ "$dest" == "$WANT_DEST" ]] || {
+	echo "fake aws: dest '$dest' != '$WANT_DEST'" >&2
+	exit 1
+}
+[[ "$endpoint" == "$WANT_ENDPOINT" ]] || {
+	echo "fake aws: endpoint '$endpoint' != '$WANT_ENDPOINT'" >&2
+	exit 1
+}

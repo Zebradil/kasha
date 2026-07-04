@@ -4,6 +4,8 @@
 # Each fixture lives at tests/fixtures/<group>/<case>/ and is defined by:
 #   cmd           - script under scripts/ to run (one line, required)
 #   env           - KEY=value lines exported before the run (optional)
+#   stdin         - fed to the script on stdin (optional; default /dev/null)
+#   bin/          - dir prepended to PATH, for fake tools (optional)
 #   expected.out  - exact expected stdout (optional; not checked if absent)
 #   expected.exit - expected exit code (optional; default 0)
 #
@@ -30,8 +32,13 @@ while IFS= read -r -d '' casedir; do
 		done <"$casedir/env"
 	fi
 
+	[[ -d "$casedir/bin" ]] && env_args+=("PATH=$casedir/bin:$PATH")
+
+	stdin_file="/dev/null"
+	[[ -f "$casedir/stdin" ]] && stdin_file="$casedir/stdin"
+
 	set +e
-	out="$(env "${env_args[@]}" bash "$scripts/$cmd" 2>/dev/null)"
+	out="$(env "${env_args[@]}" bash "$scripts/$cmd" <"$stdin_file" 2>/dev/null)"
 	code=$?
 	set -e
 

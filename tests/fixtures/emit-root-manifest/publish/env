@@ -1,0 +1,6 @@
+KASHA_FLAKE=znix
+KASHA_GEN=20260704-abc123
+KASHA_TIMESTAMP=2026-07-04T00:00:00Z
+KASHA_TARGET=s3://znix-cache?endpoint=https://acct.r2.cloudflarestorage.com&region=auto
+WANT_DEST=s3://znix-cache/roots/znix/20260704-abc123.json
+WANT_ENDPOINT=https://acct.r2.cloudflarestorage.com

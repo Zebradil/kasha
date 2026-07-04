@@ -88,7 +88,7 @@ pkgs.testers.runNixOSTest {
     # Served immediately over the box HTTP endpoint — no up-mirror in the loop.
     # Drop it from the client store, then substitute the NAR back from the box and
     # verify under the good key: proves real serving, not just a narinfo answer.
-    client.succeed(f"nix-store --delete {signed}")
+    client.succeed(f"nix-store --delete --ignore-liveness {signed}")
     client.fail(f"nix-store --check-validity {signed}")
     client.succeed(
         f"nix copy --from http://box:${toString port} "

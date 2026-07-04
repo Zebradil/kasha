@@ -113,17 +113,19 @@ in
       };
 
       networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
-
-      # Trust the existing remote-cache key(s) for signature checks (appended to
-      # nix's defaults). require-sigs stays on so unsigned paths are rejected; the
-      # box still signs nothing itself (ADR-0004).
-      nix.settings.require-sigs = true;
-      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
     }
 
     # Push path (reverse flow): accept ssh-ng pushes at LAN speed, serve them
     # immediately over the same harmonia HTTP endpoint (no up-mirror dependency).
     (lib.mkIf cfg.push.enable {
+      # The push gate: trust the existing remote-cache key(s) for signature checks
+      # (a listOf definition, so appended to nix's cache.nixos.org default — not a
+      # replacement). require-sigs stays on so unsigned pushes are rejected; the box
+      # still signs nothing itself (ADR-0004). Only meaningful for the push path, so
+      # scoped here rather than applied to every box.
+      nix.settings.require-sigs = true;
+      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
+
       services.openssh = {
         enable = true;
         settings = {

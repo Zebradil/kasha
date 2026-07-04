@@ -42,40 +42,105 @@ in
       default = true;
       description = "Open the cache port in the firewall for the LAN endpoint.";
     };
-  };
 
-  config = lib.mkIf cfg.enable {
-    services.harmonia.cache = {
-      enable = true;
-      # No signing key on the box (ADR-0004): serve upstream signatures as-is.
-      signKeyPaths = [ ];
-      settings.bind = "[::]:${toString cfg.port}";
+    trustedPublicKeys = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "znix.zebradil.dev:AAAA…" ];
+      description = ''
+        Public keys whose signatures are accepted on pushed paths — the existing
+        remote-cache key(s). Appended to nix's defaults; require-sigs stays on, so
+        an ssh-ng push is admitted only if every new path is signed by one of these
+        (or a default trusted key). The box holds no private key (ADR-0004).
+      '';
     };
 
-    # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-
-    # activated, so gate the socket (not just the service) and run at boot: a bad
-    # mount fails the box loudly at boot instead of quietly on the first request.
-    #
-    # harmonia.socket lives in early-boot sockets.target, which is ordered *before*
-    # basic.target. A unit with default dependencies is ordered *after* basic.target,
-    # so gating the socket from there forms an ordering cycle (systemd then drops the
-    # socket). Opt out of default deps and order the guard right after the store is
-    # mounted; the socket's Requires= (requiredBy below) pulls it into the boot
-    # transaction, so failure still stops the box loudly at boot.
-    systemd.services.kasha-box-store-guard = {
-      description = "kasha box: reject NFS-backed nix store (ADR-0002)";
-      unitConfig.DefaultDependencies = false;
-      after = [ "local-fs.target" ];
-      before = [ "harmonia.socket" "harmonia.service" ];
-      requiredBy = [ "harmonia.socket" "harmonia.service" ];
-      environment.KASHA_STORE_DIR = cfg.storeDir;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = lib.getExe storeGuard;
+    push = {
+      enable = lib.mkEnableOption ''
+        the LAN-speed ssh-ng push target (reverse flow): the box runs sshd and
+        accepts `nix copy --to ssh-ng://box` from authorized client keys
+      '';
+
+      user = lib.mkOption {
+        type = lib.types.str;
+        default = "kasha-push";
+        description = ''
+          Unix user authorized clients push as. Deliberately a normal (non-root)
+          user so it is NOT a nix trusted-user: an untrusted push must present
+          paths signed by a trusted-public-key, which is the require-sigs gate.
+        '';
+      };
+
+      authorizedKeys = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = "Client SSH public keys allowed to push into the box store.";
       };
     };
-
-    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
   };
+
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    {
+      services.harmonia.cache = {
+        enable = true;
+        # No signing key on the box (ADR-0004): serve upstream signatures as-is.
+        signKeyPaths = [ ];
+        settings.bind = "[::]:${toString cfg.port}";
+      };
+
+      # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-
+      # activated, so gate the socket (not just the service) and run at boot: a bad
+      # mount fails the box loudly at boot instead of quietly on the first request.
+      #
+      # harmonia.socket lives in early-boot sockets.target, which is ordered *before*
+      # basic.target. A unit with default dependencies is ordered *after* basic.target,
+      # so gating the socket from there forms an ordering cycle (systemd then drops the
+      # socket). Opt out of default deps and order the guard right after the store is
+      # mounted; the socket's Requires= (requiredBy below) pulls it into the boot
+      # transaction, so failure still stops the box loudly at boot.
+      systemd.services.kasha-box-store-guard = {
+        description = "kasha box: reject NFS-backed nix store (ADR-0002)";
+        unitConfig.DefaultDependencies = false;
+        after = [ "local-fs.target" ];
+        before = [ "harmonia.socket" "harmonia.service" ];
+        requiredBy = [ "harmonia.socket" "harmonia.service" ];
+        environment.KASHA_STORE_DIR = cfg.storeDir;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = lib.getExe storeGuard;
+        };
+      };
+
+      networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
+    }
+
+    # Push path (reverse flow): accept ssh-ng pushes at LAN speed, serve them
+    # immediately over the same harmonia HTTP endpoint (no up-mirror dependency).
+    (lib.mkIf cfg.push.enable {
+      # The push gate: trust the existing remote-cache key(s) for signature checks
+      # (a listOf definition, so appended to nix's cache.nixos.org default — not a
+      # replacement). require-sigs stays on so unsigned pushes are rejected; the box
+      # still signs nothing itself (ADR-0004). Only meaningful for the push path, so
+      # scoped here rather than applied to every box.
+      nix.settings.require-sigs = true;
+      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
+
+      services.openssh = {
+        enable = true;
+        settings = {
+          PasswordAuthentication = false;
+          KbdInteractiveAuthentication = false;
+        };
+      };
+
+      # A normal (non-root) user: NOT a nix trusted-user, so its pushes go through
+      # signature verification (require-sigs) rather than bypassing it. The client
+      # pushes as `ssh-ng://${user}@box`.
+      users.users.${cfg.push.user} = {
+        isNormalUser = true;
+        openssh.authorizedKeys.keys = cfg.push.authorizedKeys;
+      };
+    })
+  ]);
 }

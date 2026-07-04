@@ -31,7 +31,14 @@ manifest="$(jq -Rn \
 	--arg gen "$gen" \
 	--arg timestamp "$timestamp" \
 	'{flake: $flake, gen: $gen, timestamp: $timestamp,
-	  roots: [inputs | select(length > 0)] | unique}')"
+	  roots: [inputs | select(test("\\S"))] | unique}')"
+
+# Refuse an empty manifest: shipping zero roots would silently clobber a good
+# manifest with nothing (ADR-0003 precondition: caller provides store paths).
+[[ "$(jq '.roots | length' <<<"$manifest")" -gt 0 ]] || {
+	echo "emit-root-manifest: no roots on stdin" >&2
+	exit 1
+}
 
 printf '%s\n' "$manifest"
 
@@ -42,6 +49,7 @@ printf '%s\n' "$manifest"
 # ponytail: URL->aws-flags parsing is arguably the future push-target-selection
 # tool's job (ADR-0006). Inline here while that tool doesn't exist; extract when
 # it lands or a third param (profile=, secret-key=) needs shared handling.
+# Target is bucket-only (s3://bucket?...); any /prefix would fold into the key.
 target="${KASHA_TARGET#s3://}"
 bucket="${target%%\?*}"
 query=""

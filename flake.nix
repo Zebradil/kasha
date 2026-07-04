@@ -41,7 +41,8 @@
             { nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.jq ]; } ''
             # Copy writable so patchShebangs can fix fixture fakes' `/usr/bin/env`
             # shebang — it doesn't exist in the sandbox, and fakes are exec'd via PATH.
-            cp -r ${self} src
+            mkdir src
+            cp -r ${self}/tests ${self}/scripts src/
             chmod -R u+w src
             cd src
             patchShebangs tests/fixtures

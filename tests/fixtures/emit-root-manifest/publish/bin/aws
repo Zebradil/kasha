@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fake `aws` (fixture only): assert the manifest is published to the right key
-# and endpoint (WANT_DEST / WANT_ENDPOINT from the fixture env). Mismatch ->
-# exit 1, which the tool propagates so expected.exit catches it. Consumes the
-# manifest on stdin.
+# and endpoint (WANT_DEST / WANT_ENDPOINT from the fixture env), and that the
+# piped body is the manifest JSON. Mismatch -> exit 1, which the tool propagates
+# so expected.exit catches it.
 set -euo pipefail
 
 dest=""
@@ -17,7 +17,10 @@ for a in "$@"; do
 	esac
 	prev="$a"
 done
-cat >/dev/null
+jq -e '.roots | length > 0' >/dev/null || {
+	echo "fake aws: published body is not a manifest with roots" >&2
+	exit 1
+}
 
 [[ "$dest" == "$WANT_DEST" ]] || {
 	echo "fake aws: dest '$dest' != '$WANT_DEST'" >&2

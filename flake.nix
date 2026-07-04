@@ -14,6 +14,7 @@
     in
     {
       nixosModules.box = import ./modules/box.nix;
+      nixosModules.consumer = import ./modules/consumer.nix;
       nixosModules.default = self.nixosModules.box;
 
       devShells = forAllSystems ({ pkgs, ... }: {
@@ -61,6 +62,13 @@
           push = import ./tests/push.nix {
             inherit pkgs;
             boxModule = self.nixosModules.box;
+          };
+
+          # Selection: on-LAN read from box, off-LAN fall back to remote (issue #5).
+          selection = import ./tests/selection.nix {
+            inherit pkgs;
+            boxModule = self.nixosModules.box;
+            consumerModule = self.nixosModules.consumer;
           };
         });
 

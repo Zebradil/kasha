@@ -52,13 +52,14 @@ in
       settings.bind = "[::]:${toString cfg.port}";
     };
 
-    # Refuse to start on an NFS-backed store (ADR-0002). Ordered before harmonia
-    # and required by it, so a bad mount fails the box loudly instead of quietly
-    # corrupting the sqlite store DB.
+    # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-
+    # activated, so gate the socket (not just the service) and run at boot: a bad
+    # mount fails the box loudly at boot instead of quietly on the first request.
     systemd.services.kasha-box-store-guard = {
       description = "kasha box: reject NFS-backed nix store (ADR-0002)";
-      before = [ "harmonia.service" ];
-      requiredBy = [ "harmonia.service" ];
+      wantedBy = [ "multi-user.target" ];
+      before = [ "harmonia.socket" "harmonia.service" ];
+      requiredBy = [ "harmonia.socket" "harmonia.service" ];
       environment.KASHA_STORE_DIR = cfg.storeDir;
       serviceConfig = {
         Type = "oneshot";

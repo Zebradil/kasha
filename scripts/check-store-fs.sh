@@ -14,6 +14,10 @@ store_dir="${KASHA_STORE_DIR:-/nix}"
 # ponytail: test seam. Fixtures inject KASHA_STORE_FSTYPE so the check is
 # exercisable without a real NFS mount; production leaves it unset and we read
 # the live filesystem type. `stat -f -c %T` is GNU coreutils (the box is Linux).
+if [[ -z "${KASHA_STORE_FSTYPE:-}" && ! -d "$store_dir" ]]; then
+	echo "kasha: refusing to start: nix store '$store_dir' does not exist." >&2
+	exit 1
+fi
 fstype="${KASHA_STORE_FSTYPE:-$(stat -f -c %T -- "$store_dir")}"
 
 case "$fstype" in

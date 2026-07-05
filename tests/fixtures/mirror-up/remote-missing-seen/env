@@ -1,0 +1,7 @@
+KASHA_REMOTE=s3://cache
+KASHA_FLAKE=znix
+KASHA_LOCAL_LIST_FILE=tests/fixtures/mirror-up/remote-missing-seen/local-list
+KASHA_REMOTE_LIST_FILE=tests/fixtures/mirror-up/remote-missing-seen/remote-list
+KASHA_MANIFEST_DIR=tests/fixtures/mirror-up/remote-missing-seen/manifests
+KASHA_SEEN_FILE=tests/fixtures/mirror-up/remote-missing-seen/seen
+KASHA_DRY_RUN=1

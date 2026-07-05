@@ -76,6 +76,12 @@
             inherit pkgs;
             boxModule = self.nixosModules.box;
           };
+
+          # Up replica: discover box-local roots, push closures to remote (issue #8).
+          mirror-up = import ./tests/mirror-up.nix {
+            inherit pkgs;
+            boxModule = self.nixosModules.box;
+          };
         });
 
       formatter = forAllSystems ({ pkgs, ... }: pkgs.nixpkgs-fmt);

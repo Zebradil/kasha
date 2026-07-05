@@ -23,6 +23,12 @@ let
     runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
     text = builtins.readFile ../scripts/mirror-down.sh;
   };
+
+  mirrorUp = pkgs.writeShellApplication {
+    name = "kasha-mirror-up";
+    runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+    text = builtins.readFile ../scripts/mirror-up.sh;
+  };
 in
 {
   options.services.kasha-box = {
@@ -112,6 +118,44 @@ in
         type = lib.types.str;
         default = "/var/lib/kasha/mirror-down";
         description = "Directory holding last-seen generation sets and overlap locks.";
+      };
+    };
+
+    mirrorUp = {
+      enable = lib.mkEnableOption ''
+        the eager up replica: periodically copy locally-pushed generation roots
+        to the remote cache and publish their root manifests
+      '';
+
+      remoteCache = lib.mkOption {
+        type = lib.types.str;
+        example = "s3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto";
+        description = "Remote cache URL used for root-manifest discovery, `nix copy --to`, and manifest publish.";
+      };
+
+      flakes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "znix" ];
+        description = "Flake ids under roots/<flake>/ to mirror up.";
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "5min";
+        description = "systemd OnUnitActiveSec interval for the up-mirror timer.";
+      };
+
+      stateDir = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/kasha/mirror-up";
+        description = "Directory holding mirrored-up generation sets and overlap locks.";
+      };
+
+      localRootsDir = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/kasha/roots";
+        description = "Box-local root manifests to mirror up, laid out as roots/<flake>/<gen>.json without the leading roots/ component.";
       };
     };
   };
@@ -221,6 +265,50 @@ in
           Unit = "kasha-mirror-down-${flake}.service";
         };
       }) cfg.mirrorDown.flakes);
+    })
+
+    (lib.mkIf cfg.mirrorUp.enable {
+      assertions = [
+        {
+          assertion = cfg.mirrorUp.flakes != [ ];
+          message = "services.kasha-box.mirrorUp.flakes must list at least one roots/<flake>/ prefix.";
+        }
+        {
+          assertion = lib.hasPrefix "s3://" cfg.mirrorUp.remoteCache;
+          message = "services.kasha-box.mirrorUp.remoteCache must be an s3:// URL so roots/<flake>/ can be listed and published.";
+        }
+      ];
+
+      nix.settings.require-sigs = true;
+      nix.settings.experimental-features = [ "nix-command" ];
+      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
+
+      systemd.services = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-up-${flake}" {
+        description = "kasha box: mirror ${flake} roots to remote cache";
+        after = [ "network-online.target" ];
+        wants = [ "network-online.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          StateDirectory = "kasha";
+        };
+        environment = {
+          KASHA_REMOTE = cfg.mirrorUp.remoteCache;
+          KASHA_FLAKE = flake;
+          KASHA_STATE_DIR = cfg.mirrorUp.stateDir;
+          KASHA_LOCAL_ROOTS_DIR = cfg.mirrorUp.localRootsDir;
+        };
+        path = [ pkgs.nix ];
+        script = lib.getExe mirrorUp;
+      }) cfg.mirrorUp.flakes);
+
+      systemd.timers = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-up-${flake}" {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "1min";
+          OnUnitActiveSec = cfg.mirrorUp.interval;
+          Unit = "kasha-mirror-up-${flake}.service";
+        };
+      }) cfg.mirrorUp.flakes);
     })
   ]);
 }

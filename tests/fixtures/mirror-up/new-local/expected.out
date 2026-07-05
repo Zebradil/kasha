@@ -1,0 +1,2 @@
+s3://cache?endpoint=r2.example&region=auto /nix/store/aaa-root
+s3://cache?endpoint=r2.example&region=auto /nix/store/bbb-root

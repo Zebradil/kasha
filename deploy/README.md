@@ -33,6 +33,17 @@ signing key** (ADR-0004) — it serves upstream signatures as-is.
       flakes = [ "znix" ];
       interval = "5min";
     };
+
+    # Eager up replica: periodically read box-local roots/<flake>/<gen>.json
+    # manifests, `nix copy --to` each root to the remote cache, and publish the
+    # same manifest upstream after the copy succeeds.
+    mirrorUp = {
+      enable = true;
+      remoteCache = "s3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto";
+      flakes = [ "znix" ];
+      interval = "5min";
+      localRootsDir = "/var/lib/kasha/roots";
+    };
   };
 }
 ```
@@ -59,8 +70,10 @@ These paths are validated end-to-end by NixOS-VM checks: `smoke`
 (`tests/smoke.nix`) covers seed → serve → substitute → verify; `push`
 (`tests/push.nix`) covers signed push → serve-immediately, plus rejection of an
 unsigned push and the box holding no signing key; `mirror-down`
-(`tests/mirror-down.nix`) covers remote root manifest → box closure and
-idempotent re-run.
+(`tests/mirror-down.nix`) covers remote root manifest → box closure;
+`mirror-up` (`tests/mirror-up.nix`) covers box-local root manifest → remote
+closure + manifest. Both mirror checks cover failed-copy safety and idempotent
+re-run.
 
 ## k3s
 

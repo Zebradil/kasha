@@ -41,6 +41,20 @@ The push user is a normal (non-root) account, so it is **not** a nix
 trusted-user: an untrusted push must present paths signed by a
 `trustedPublicKeys` key, which is exactly the `require-sigs` gate.
 
+Client-side reverse-flow pushes use `scripts/push.sh`: it probes the box HTTP
+cache with a `.narinfo` HEAD, pushes to `KASHA_BOX_TARGET` when reachable, and
+falls back to `KASHA_REMOTE_TARGET` when not. `--to <target>` skips probing and
+forces a target.
+
+```sh
+KASHA_BOX_CACHE=http://box:5000 \
+KASHA_BOX_TARGET=ssh-ng://kasha-push@box \
+KASHA_REMOTE_TARGET='s3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto' \
+scripts/push.sh /nix/store/...
+
+scripts/push.sh --to ssh-ng://kasha-push@box /nix/store/...
+```
+
 These paths are validated end-to-end by NixOS-VM checks: `smoke`
 (`tests/smoke.nix`) covers seed → serve → substitute → verify; `push`
 (`tests/push.nix`) covers signed push → serve-immediately, plus rejection of an

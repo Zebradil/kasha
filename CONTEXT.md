@@ -54,3 +54,6 @@ box — it cannot cross a Kubernetes CNI overlay).
 **Reverse flow**:
 A local build pushed up (box or remote cache) instead of the usual CI-builds /
 user-pulls direction. Optional; exists to let CI skip work others already built.
+The push entrypoint probes the box's HTTP cache with a `.narinfo` HEAD and targets
+the box's `ssh-ng://` endpoint when reachable, otherwise the remote cache; `--to`
+forces a target for manual runs and performance tests.

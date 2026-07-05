@@ -1,0 +1,3 @@
+--print-target
+--to
+s3://forced-cache?endpoint=forced.example&region=auto

@@ -4,6 +4,7 @@
 # Each fixture lives at tests/fixtures/<group>/<case>/ and is defined by:
 #   cmd           - script under scripts/ to run (one line, required)
 #   env           - KEY=value lines exported before the run (optional)
+#   args          - one argument per line passed to the script (optional)
 #   stdin         - fed to the script on stdin (optional; default /dev/null)
 #   bin/          - dir prepended to PATH, for fake tools (optional)
 #   expected.out  - exact expected stdout (optional; not checked if absent)
@@ -24,6 +25,14 @@ while IFS= read -r -d '' casedir; do
 	name="${casedir#"$fixtures"/}"
 	cmd="$(cat "$casedir/cmd")"
 
+	args=()
+	if [[ -f "$casedir/args" ]]; then
+		while IFS= read -r arg; do
+			[[ -z "$arg" ]] && continue
+			args+=("$arg")
+		done <"$casedir/args"
+	fi
+
 	env_args=()
 	if [[ -f "$casedir/env" ]]; then
 		while IFS= read -r line; do
@@ -38,7 +47,7 @@ while IFS= read -r -d '' casedir; do
 	[[ -f "$casedir/stdin" ]] && stdin_file="$casedir/stdin"
 
 	set +e
-	out="$(env "${env_args[@]}" bash "$scripts/$cmd" <"$stdin_file" 2>/dev/null)"
+	out="$(env "${env_args[@]}" bash "$scripts/$cmd" "${args[@]}" <"$stdin_file" 2>/dev/null)"
 	code=$?
 	set -e
 

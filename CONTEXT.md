@@ -57,3 +57,6 @@ user-pulls direction. Optional; exists to let CI skip work others already built.
 The push entrypoint probes the box's HTTP cache with a `.narinfo` HEAD and targets
 the box's `ssh-ng://` endpoint when reachable, otherwise the remote cache; `--to`
 forces a target for manual runs and performance tests.
+
+Box-local root manifests live under `/var/lib/kasha/roots/<flake>/<gen>.json` and
+are the up-mirror's source of truth for locally-pushed generations.

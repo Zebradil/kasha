@@ -85,10 +85,26 @@ it at runtime as a backstop.
 
 Deployment options for the reference consumer (znix):
 
-- **NixOS-as-container** (recommended): build a NixOS system with the module and
-  run it (e.g. via `nixos-generators` / a systemd-nspawn or microvm image). The
-  store PVC mounts at `/nix`.
-- **OCI image**: note the mount gotcha — a `dockerTools` image keeps its own
-  binaries under `/nix/store`, so mounting the store PVC at `/nix` shadows them.
-  Mount the data store at a separate path and point harmonia at it, or ship
-  harmonia outside `/nix`. This wiring lives with the deploy slice, not here.
+- **NixOS-as-container**: build a NixOS system with the module and run it (e.g.
+  via `nixos-generators` / a systemd-nspawn or microvm image). The store PVC
+  mounts at `/nix`.
+- **OCI image**: run `ghcr.io/zebradil/kasha-box`. Mount the box data PVC at
+  `/kasha`, not `/nix`; the image keeps its own binaries under `/nix/store` and
+  uses `/kasha/nix/store` as the physical box store.
+
+```sh
+docker run --rm \
+  -p 5000:5000 \
+  -v kasha-data:/kasha \
+  ghcr.io/zebradil/kasha-box:edge
+```
+
+OCI environment:
+
+- `KASHA_PORT` defaults to `5000`.
+- `KASHA_DATA_ROOT` defaults to `/kasha`.
+- `KASHA_TRUSTED_PUBLIC_KEYS` is required for push and mirror modes.
+- `KASHA_PUSH_ENABLE=1` starts `nix daemon` and `sshd`; set
+  `KASHA_PUSH_AUTHORIZED_KEYS` and optionally `KASHA_PUSH_USER`.
+- `KASHA_MIRROR_DOWN_ENABLE=1` or `KASHA_MIRROR_UP_ENABLE=1` starts mirror loops;
+  set `KASHA_REMOTE`, `KASHA_FLAKES`, and optional interval seconds.

@@ -1,0 +1,89 @@
+name: oci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
+
+      - name: Build image
+        run: nix build .#packages.x86_64-linux.oci-image
+
+      - name: Load image
+        run: ./result | docker load
+
+      - name: Smoke image
+        run: bash scripts/oci-smoke.sh ghcr.io/zebradil/kasha-box:dev
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kasha-box"
+          short_sha="${GITHUB_SHA::12}"
+          tags=("$image:sha-$short_sha")
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            tags+=("$image:edge")
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tags+=("$image:${GITHUB_REF_NAME}")
+          fi
+          {
+            echo "image=$image"
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            docker tag ghcr.io/zebradil/kasha-box:dev "$tag"
+            docker push "$tag"
+          done <<<"${{ steps.tags.outputs.tags }}"
+
+      - name: Read digest
+        if: github.event_name == 'push'
+        id: digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r tag <<<"${{ steps.tags.outputs.tags }}"
+          repo_digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$tag")"
+          digest="${repo_digest#*@}"
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+
+      - name: Attest image
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.tags.outputs.image }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true

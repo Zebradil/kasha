@@ -24,6 +24,15 @@ signing key** (ADR-0004) — it serves upstream signatures as-is.
       enable = true;
       authorizedKeys = [ "ssh-ed25519 AAAA… laptop" ];
     };
+
+    # Eager down replica: periodically list roots/<flake>/ in the remote cache
+    # and `nix copy --from` each new root, which pulls the full closure.
+    mirrorDown = {
+      enable = true;
+      remoteCache = "s3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto";
+      flakes = [ "znix" ];
+      interval = "5min";
+    };
   };
 }
 ```
@@ -32,10 +41,12 @@ The push user is a normal (non-root) account, so it is **not** a nix
 trusted-user: an untrusted push must present paths signed by a
 `trustedPublicKeys` key, which is exactly the `require-sigs` gate.
 
-Both paths are validated end-to-end by NixOS-VM checks: `smoke`
+These paths are validated end-to-end by NixOS-VM checks: `smoke`
 (`tests/smoke.nix`) covers seed → serve → substitute → verify; `push`
 (`tests/push.nix`) covers signed push → serve-immediately, plus rejection of an
-unsigned push and the box holding no signing key.
+unsigned push and the box holding no signing key; `mirror-down`
+(`tests/mirror-down.nix`) covers remote root manifest → box closure and
+idempotent re-run.
 
 ## k3s
 

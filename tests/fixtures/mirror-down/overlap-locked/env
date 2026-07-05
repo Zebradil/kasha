@@ -1,0 +1,4 @@
+KASHA_REMOTE=s3://cache
+KASHA_FLAKE=znix
+KASHA_STATE_DIR=/tmp/kasha-mirror-down-overlap-fixture
+KASHA_LIST_FILE=tests/fixtures/mirror-down/overlap-locked/list

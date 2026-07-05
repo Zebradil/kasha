@@ -2,5 +2,4 @@ KASHA_REMOTE=s3://cache
 KASHA_FLAKE=znix
 KASHA_LOCAL_LIST_FILE=tests/fixtures/mirror-up/idempotent/local-list
 KASHA_REMOTE_LIST_FILE=tests/fixtures/mirror-up/idempotent/remote-list
-KASHA_SEEN_FILE=tests/fixtures/mirror-up/idempotent/seen
 KASHA_DRY_RUN=1

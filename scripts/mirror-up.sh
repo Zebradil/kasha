@@ -2,9 +2,8 @@
 # Mirror local root manifests from the box store up to the remote cache.
 #
 # Env-in -> stdout-out (ADR-0006): diff local roots/<flake>/ manifests against
-# remote roots/<flake>/ plus a flat last-seen gen set, copy each missing root to
-# the remote cache, then publish the same root manifest upstream. Safe to re-run;
-# overlap exits.
+# remote roots/<flake>/, copy each missing root to the remote cache, then publish
+# the same root manifest upstream. Safe to re-run; overlap exits.
 #
 # Env:
 #   KASHA_REMOTE          nix/S3 remote cache URL                  (required)
@@ -14,7 +13,6 @@
 #   KASHA_LOCAL_LIST_FILE test seam: newline local manifest keys   (optional)
 #   KASHA_REMOTE_LIST_FILE test seam: newline remote manifest keys (optional)
 #   KASHA_MANIFEST_DIR    test seam: local <gen>.json dir          (optional)
-#   KASHA_SEEN_FILE       test seam for dry-run decision tests     (optional)
 #   KASHA_DRY_RUN         print roots to copy, do not copy/state   (optional)
 #   KASHA_COPY            test seam: copy command                  (default: nix copy --to)
 #   KASHA_AWS             test seam: aws command                   (default: aws)
@@ -90,12 +88,10 @@ parse_gens() {
 decide_new() {
 	local local_list_file="$1"
 	local remote_list_file="$2"
-	local seen_file="$3"
-	local out_file="$4"
+	local out_file="$3"
 	parse_gens "$local_list_file" "$out_file.local"
 	parse_gens "$remote_list_file" "$out_file.remote"
-	sort -u "$seen_file" "$out_file.remote" >"$out_file.upstream"
-	comm -23 "$out_file.local" "$out_file.upstream" >"$out_file"
+	comm -23 "$out_file.local" "$out_file.remote" >"$out_file"
 }
 
 publish_manifest() {
@@ -109,10 +105,9 @@ publish_manifest() {
 if [[ -n "${KASHA_DRY_RUN:-}" ]]; then
 	tmp="$(mktemp -d "${TMPDIR:-/tmp}/kasha-mirror-up.XXXXXX")"
 	trap 'rm -rf "$tmp"' EXIT
-	seen="${KASHA_SEEN_FILE:-/dev/null}"
 	list_local_roots "$tmp/local"
 	list_remote_roots "$tmp/remote"
-	decide_new "$tmp/local" "$tmp/remote" "$seen" "$tmp/new"
+	decide_new "$tmp/local" "$tmp/remote" "$tmp/new"
 	if [[ ! -s "$tmp/new" ]]; then
 		echo "kasha mirror-up: no new local roots for $flake"
 		exit 0
@@ -143,7 +138,7 @@ touch "$seen"
 cp "$seen" "$tmp.seen"
 list_local_roots "$tmp.local"
 list_remote_roots "$tmp.remote"
-decide_new "$tmp.local" "$tmp.remote" "$seen" "$tmp.new"
+decide_new "$tmp.local" "$tmp.remote" "$tmp.new"
 
 if [[ ! -s "$tmp.new" ]]; then
 	echo "kasha mirror-up: no new local roots for $flake"

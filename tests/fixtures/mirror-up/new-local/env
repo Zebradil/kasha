@@ -3,5 +3,4 @@ KASHA_FLAKE=znix
 KASHA_LOCAL_LIST_FILE=tests/fixtures/mirror-up/new-local/local-list
 KASHA_REMOTE_LIST_FILE=tests/fixtures/mirror-up/new-local/remote-list
 KASHA_MANIFEST_DIR=tests/fixtures/mirror-up/new-local/manifests
-KASHA_SEEN_FILE=tests/fixtures/mirror-up/new-local/seen
 KASHA_DRY_RUN=1

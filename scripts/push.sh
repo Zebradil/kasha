@@ -3,7 +3,7 @@
 #
 # Env:
 #   KASHA_REMOTE_TARGET   remote cache nix copy target, usually s3://... (required unless --to)
-#   KASHA_BOX_TARGET      box nix copy target                    (default: ssh-ng://box)
+#   KASHA_BOX_TARGET      box nix copy target                    (default: ssh-ng://kasha-push@box)
 #   KASHA_BOX_CACHE       box HTTP cache endpoint                 (default: http://box:5000)
 #   KASHA_PROBE_NARINFO   .narinfo path used for reachability     (default: 00000000000000000000000000000000.narinfo)
 #   KASHA_CONNECT_TIMEOUT probe timeout seconds                   (default: 2)
@@ -28,7 +28,7 @@ choose_target() {
 	fi
 
 	case "$reachable" in
-	1) printf '%s\n' "${KASHA_BOX_TARGET:-ssh-ng://box}" ;;
+	1) printf '%s\n' "${KASHA_BOX_TARGET:-ssh-ng://kasha-push@box}" ;;
 	0) printf '%s\n' "${KASHA_REMOTE_TARGET:?KASHA_REMOTE_TARGET required}" ;;
 	*)
 		echo "push: invalid reachability result: $reachable" >&2
@@ -119,7 +119,7 @@ if [[ -n "$print_target" ]]; then
 fi
 
 if [[ ${#paths[@]} -eq 0 && ! -t 0 ]]; then
-	while IFS= read -r path; do
+	while IFS= read -r path || [[ -n "$path" ]]; do
 		[[ -z "$path" ]] && continue
 		paths+=("$path")
 	done

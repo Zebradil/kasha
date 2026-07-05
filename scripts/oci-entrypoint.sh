@@ -35,7 +35,7 @@ write_config() {
 	KASHA_STORE_DIR="$data_root/nix" kasha-check-store-fs
 	nix-store --store "local?root=$data_root" --init
 	cat >/run/kasha-nix <<EOF
-#!/usr/bin/env sh
+#!/bin/sh
 exec nix --store 'local?root=$data_root' "\$@"
 EOF
 	chmod +x /run/kasha-nix
@@ -65,7 +65,7 @@ start_harmonia() {
 start_nix_daemon() {
 	: "${KASHA_TRUSTED_PUBLIC_KEYS:?KASHA_TRUSTED_PUBLIC_KEYS required when KASHA_PUSH_ENABLE is set}"
 	mkdir -p /nix/var/nix/daemon-socket
-	nix --store "local?root=$data_root" daemon --force-untrusted &
+	nix --extra-experimental-features daemon-trust-override --store "local?root=$data_root" daemon --force-untrusted &
 	pids+=("$!")
 	for _ in $(seq 1 50); do
 		[[ -S /nix/var/nix/daemon-socket/socket ]] && return
@@ -78,13 +78,24 @@ start_nix_daemon() {
 start_sshd() {
 	: "${KASHA_PUSH_AUTHORIZED_KEYS:?KASHA_PUSH_AUTHORIZED_KEYS required when KASHA_PUSH_ENABLE is set}"
 	user="${KASHA_PUSH_USER:-kasha-push}"
-	id "$user" >/dev/null 2>&1 || useradd -m -s /bin/sh "$user"
+	mkdir -p /etc /root /var/empty "/home/$user"
+	cat >/etc/passwd <<EOF
+root:x:0:0:root:/root:/bin/sh
+sshd:x:997:997:sshd:/var/empty:/bin/sh
+$user:x:1000:1000:kasha push:/home/$user:/bin/sh
+EOF
+	cat >/etc/group <<EOF
+root:x:0:
+sshd:x:997:
+$user:x:1000:
+EOF
 	mkdir -p "/home/$user/.ssh" /run/sshd
 	printf '%s\n' "$KASHA_PUSH_AUTHORIZED_KEYS" >"/home/$user/.ssh/authorized_keys"
-	chown -R "$user:$user" "/home/$user/.ssh"
+	chown -R 1000:1000 "/home/$user"
 	chmod 700 "/home/$user/.ssh"
 	chmod 600 "/home/$user/.ssh/authorized_keys"
-	sshd -D -e &
+	ssh-keygen -A
+	"$(command -v sshd)" -D -e &
 	pids+=("$!")
 }
 

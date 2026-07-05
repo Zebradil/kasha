@@ -23,6 +23,57 @@
         };
       });
 
+      packages = forAllSystems ({ system, pkgs }:
+        lib.optionalAttrs (lib.hasSuffix "linux" system) (
+          let
+            mkScript = name: file: runtimeInputs: pkgs.writeShellApplication {
+              inherit name runtimeInputs;
+              text = builtins.readFile file;
+            };
+            checkStoreFs = mkScript "kasha-check-store-fs" ./scripts/check-store-fs.sh [ pkgs.coreutils ];
+            mirrorDown = mkScript "kasha-mirror-down" ./scripts/mirror-down.sh [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+            mirrorUp = mkScript "kasha-mirror-up" ./scripts/mirror-up.sh [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+            ociEntrypoint = pkgs.writeShellApplication {
+              name = "oci-entrypoint";
+              runtimeInputs = [ pkgs.bash pkgs.coreutils pkgs.curl pkgs.gnused pkgs.harmonia pkgs.nix pkgs.openssh pkgs.shadow pkgs.util-linux checkStoreFs mirrorDown mirrorUp ];
+              text = builtins.readFile ./scripts/oci-entrypoint.sh;
+            };
+          in
+          {
+            oci-image = pkgs.dockerTools.streamLayeredImage {
+              name = "ghcr.io/zebradil/kasha-box";
+              tag = "dev";
+              contents = [
+                pkgs.bashInteractive
+                pkgs.cacert
+                pkgs.coreutils
+                pkgs.curl
+                pkgs.gnused
+                pkgs.harmonia
+                pkgs.nix
+                pkgs.openssh
+                pkgs.shadow
+                ociEntrypoint
+                checkStoreFs
+                mirrorDown
+                mirrorUp
+              ];
+              config = {
+                Entrypoint = [ "${ociEntrypoint}/bin/oci-entrypoint" ];
+                ExposedPorts = {
+                  "5000/tcp" = { };
+                  "22/tcp" = { };
+                };
+                Env = [
+                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                  "NIX_CONFIG=experimental-features = nix-command flakes"
+                ];
+                Volumes = { "/kasha" = { }; };
+              };
+            };
+          }
+        ));
+
       checks = forAllSystems ({ system, pkgs }:
         {
           shellcheck = pkgs.runCommand "shellcheck"

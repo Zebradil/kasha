@@ -20,6 +20,12 @@ A net-local binary cache instance reachable only from one physical network (e.g.
 LAN). Holds a full nix store, serves reads, and accepts pushes at LAN speed.
 _Avoid_: local cache, edge cache, proxy
 
+**Box image**:
+The generic OCI packaging of a box, published for container runtimes but still backed
+by a persistent box data root. It is configured by environment variables and is not a
+replacement for deployment-specific manifests.
+_Avoid_: Docker image, container (without box/image context)
+
 **Eager bidirectional replica**:
 The box's sync model: it continuously pulls new generations *down* from the remote
 cache in the background (before anything asks for them) and mirrors locally-pushed
@@ -50,6 +56,11 @@ The pluggable mechanism a selection shim uses to locate the box's address: a
 static-endpoint backend (works anywhere, including inside a k8s overlay network) or an
 mDNS backend (zero-config, but only works when the shim shares a LAN segment with the
 box — it cannot cross a Kubernetes CNI overlay).
+
+**Image channel**:
+A published tag stream for the box image. `edge` follows `main`; `sha-*` and `v*` tags
+are immutable references for reproducible deployments.
+_Avoid_: latest
 
 **Reverse flow**:
 A local build pushed up (box or remote cache) instead of the usual CI-builds /

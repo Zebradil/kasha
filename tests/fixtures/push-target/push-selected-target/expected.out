@@ -1,0 +1,1 @@
+copy --to ssh-ng://kasha-push@box /nix/store/abc-root

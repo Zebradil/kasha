@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+saw_head=0
+last=""
+for arg in "$@"; do
+	[[ "$arg" == "--head" ]] && saw_head=1
+	last="$arg"
+done
+
+[[ "$saw_head" == 1 ]]
+[[ "$last" == "${WANT_PROBE_URL:?}" ]]

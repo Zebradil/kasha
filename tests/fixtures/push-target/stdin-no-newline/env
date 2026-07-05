@@ -1,0 +1,3 @@
+KASHA_BOX_REACHABLE=1
+KASHA_BOX_TARGET=ssh-ng://kasha-push@box
+KASHA_REMOTE_TARGET=s3://remote-cache?endpoint=r2.example&region=auto

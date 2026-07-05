@@ -1,0 +1,5 @@
+KASHA_BOX_CACHE=http://box:5000
+KASHA_PROBE_NARINFO=abc123.narinfo
+KASHA_REMOTE_TARGET=s3://remote-cache?endpoint=r2.example&region=auto
+KASHA_PRINT_TARGET=1
+WANT_PROBE_URL=http://box:5000/abc123.narinfo

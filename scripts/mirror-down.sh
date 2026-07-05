@@ -61,9 +61,13 @@ decide_new() {
 	local list_file="$1"
 	local seen_file="$2"
 	local out_file="$3"
-	sed -n "s#.*\(roots/$flake/[^[:space:]]*\.json\).*#\1#p" "$list_file" |
-		sed "s#^roots/$flake/##; s#\.json\$##" |
-		sort -u >"$out_file.remote"
+	local prefix="roots/$flake/"
+	while IFS= read -r line; do
+		key="${line##*[[:space:]]}"
+		case "$key" in
+		"$prefix"*.json) printf '%s\n' "${key#"$prefix"}" ;;
+		esac
+	done <"$list_file" | sed 's#\.json$##' | sort -u >"$out_file.remote"
 	sort -u "$seen_file" >"$out_file.seen"
 	comm -23 "$out_file.remote" "$out_file.seen" >"$out_file"
 }

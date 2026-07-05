@@ -60,6 +60,9 @@ pkgs.testers.runNixOSTest {
           ''}";
           KASHA_COPY = "${pkgs.writeShellScript "kasha-test-copy" ''
             set -euo pipefail
+            if [[ -e /var/lib/kasha/mirror-down/fail-copy ]]; then
+              exit 42
+            fi
             mkdir -p /var/lib/kasha/mirror-down
             printf '%s %s\n' "$1" "$2" >> /var/lib/kasha/mirror-down/copies
             exec ${pkgs.nix}/bin/nix copy --from http://remote:${toString port} "$2"
@@ -81,6 +84,14 @@ pkgs.testers.runNixOSTest {
     dep = "${remoteDep}"
     box.fail(f"nix-store --check-validity {path}")
     box.fail(f"nix-store --check-validity {dep}")
+
+    # Crash/failure safety: copy failure must not publish the generation as seen.
+    box.succeed("mkdir -p /var/lib/kasha/mirror-down && touch /var/lib/kasha/mirror-down/fail-copy")
+    box.fail("systemctl start kasha-mirror-down-${flake}.service")
+    box.fail("grep -q '${gen}' /var/lib/kasha/mirror-down/${flake}.seen")
+    box.fail(f"nix-store --check-validity {path}")
+    box.succeed("rm /var/lib/kasha/mirror-down/fail-copy")
+
     box.succeed("systemctl start kasha-mirror-down-${flake}.service")
     box.succeed(f"nix-store --check-validity {path}")
     box.succeed(f"nix-store --check-validity {dep}")

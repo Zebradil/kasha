@@ -70,6 +70,12 @@
             boxModule = self.nixosModules.box;
             consumerModule = self.nixosModules.consumer;
           };
+
+          # Down replica: discover remote roots, pull closures into box (issue #6).
+          mirror-down = import ./tests/mirror-down.nix {
+            inherit pkgs;
+            boxModule = self.nixosModules.box;
+          };
         });
 
       formatter = forAllSystems ({ pkgs, ... }: pkgs.nixpkgs-fmt);

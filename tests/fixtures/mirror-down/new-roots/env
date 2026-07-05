@@ -1,0 +1,6 @@
+KASHA_REMOTE=s3://cache?endpoint=r2.example&region=auto
+KASHA_FLAKE=znix
+KASHA_LIST_FILE=tests/fixtures/mirror-down/new-roots/list
+KASHA_MANIFEST_DIR=tests/fixtures/mirror-down/new-roots/manifests
+KASHA_SEEN_FILE=tests/fixtures/mirror-down/new-roots/seen
+KASHA_DRY_RUN=1

@@ -17,6 +17,12 @@ let
     runtimeInputs = [ pkgs.coreutils ];
     text = builtins.readFile ../scripts/check-store-fs.sh;
   };
+
+  mirrorDown = pkgs.writeShellApplication {
+    name = "kasha-mirror-down";
+    runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+    text = builtins.readFile ../scripts/mirror-down.sh;
+  };
 in
 {
   options.services.kasha-box = {
@@ -48,10 +54,9 @@ in
       default = [ ];
       example = [ "znix.zebradil.dev:AAAA…" ];
       description = ''
-        Public keys whose signatures are accepted on pushed paths — the existing
-        remote-cache key(s). Appended to nix's defaults; require-sigs stays on, so
-        an ssh-ng push is admitted only if every new path is signed by one of these
-        (or a default trusted key). The box holds no private key (ADR-0004).
+        Existing remote-cache public key(s). Appended to nix's defaults for
+        push verification and down-mirror substitution; the box holds no
+        private key (ADR-0004).
       '';
     };
 
@@ -75,6 +80,38 @@ in
         type = lib.types.listOf lib.types.str;
         default = [ ];
         description = "Client SSH public keys allowed to push into the box store.";
+      };
+    };
+
+    mirrorDown = {
+      enable = lib.mkEnableOption ''
+        the eager down replica: periodically list remote root manifests and pull
+        new generation closures into the box store
+      '';
+
+      remoteCache = lib.mkOption {
+        type = lib.types.str;
+        example = "s3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto";
+        description = "Remote cache URL used for root-manifest discovery and `nix copy --from`.";
+      };
+
+      flakes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "znix" ];
+        description = "Flake ids under roots/<flake>/ to mirror down.";
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "5min";
+        description = "systemd OnUnitActiveSec interval for the down-mirror timer.";
+      };
+
+      stateDir = lib.mkOption {
+        type = lib.types.str;
+        default = "/var/lib/kasha/mirror-down";
+        description = "Directory holding last-seen generation sets and overlap locks.";
       };
     };
   };
@@ -141,6 +178,49 @@ in
         isNormalUser = true;
         openssh.authorizedKeys.keys = cfg.push.authorizedKeys;
       };
+    })
+
+    (lib.mkIf cfg.mirrorDown.enable {
+      assertions = [
+        {
+          assertion = cfg.mirrorDown.flakes != [ ];
+          message = "services.kasha-box.mirrorDown.flakes must list at least one roots/<flake>/ prefix.";
+        }
+        {
+          assertion = lib.hasPrefix "s3://" cfg.mirrorDown.remoteCache;
+          message = "services.kasha-box.mirrorDown.remoteCache must be an s3:// URL so roots/<flake>/ can be listed.";
+        }
+      ];
+
+      nix.settings.require-sigs = true;
+      nix.settings.experimental-features = [ "nix-command" ];
+      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
+
+      systemd.services = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-down-${flake}" {
+        description = "kasha box: mirror ${flake} roots from remote cache";
+        after = [ "network-online.target" ];
+        wants = [ "network-online.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          StateDirectory = "kasha";
+        };
+        environment = {
+          KASHA_REMOTE = cfg.mirrorDown.remoteCache;
+          KASHA_FLAKE = flake;
+          KASHA_STATE_DIR = cfg.mirrorDown.stateDir;
+        };
+        path = [ pkgs.nix ];
+        script = lib.getExe mirrorDown;
+      }) cfg.mirrorDown.flakes);
+
+      systemd.timers = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-down-${flake}" {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "1min";
+          OnUnitActiveSec = cfg.mirrorDown.interval;
+          Unit = "kasha-mirror-down-${flake}.service";
+        };
+      }) cfg.mirrorDown.flakes);
     })
   ]);
 }

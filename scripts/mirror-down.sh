@@ -44,7 +44,11 @@ list_roots() {
 	if [[ -n "${KASHA_LIST_FILE:-}" ]]; then
 		cp "$KASHA_LIST_FILE" "$1"
 	else
-		"$aws" "${aws_opts[@]}" s3 ls --recursive "s3://$bucket/roots/$flake/" >"$1"
+		# s3api, not `s3 ls`: `s3 ls` exits 1 on an empty prefix, which under set -e
+		# turns "no roots published yet" into a spurious failure. list-objects-v2
+		# exits 0 and yields null Contents, which jq drops to an empty list.
+		"$aws" "${aws_opts[@]}" s3api list-objects-v2 --bucket "$bucket" --prefix "roots/$flake/" --output json |
+			jq -r '.Contents[]?.Key // empty' >"$1"
 	fi
 }
 

@@ -21,58 +21,58 @@ fail=0
 count=0
 
 while IFS= read -r -d '' casedir; do
-	count=$((count + 1))
-	name="${casedir#"$fixtures"/}"
-	cmd="$(cat "$casedir/cmd")"
+  count=$((count + 1))
+  name="${casedir#"$fixtures"/}"
+  cmd="$(cat "$casedir/cmd")"
 
-	args=()
-	if [[ -f "$casedir/args" ]]; then
-		while IFS= read -r arg; do
-			[[ -z "$arg" ]] && continue
-			args+=("$arg")
-		done <"$casedir/args"
-	fi
+  args=()
+  if [[ -f "$casedir/args" ]]; then
+    while IFS= read -r arg; do
+      [[ -z "$arg" ]] && continue
+      args+=("$arg")
+    done <"$casedir/args"
+  fi
 
-	env_args=()
-	if [[ -f "$casedir/env" ]]; then
-		while IFS= read -r line; do
-			[[ -z "$line" || "$line" == \#* ]] && continue
-			env_args+=("$line")
-		done <"$casedir/env"
-	fi
+  env_args=()
+  if [[ -f "$casedir/env" ]]; then
+    while IFS= read -r line; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      env_args+=("$line")
+    done <"$casedir/env"
+  fi
 
-	[[ -d "$casedir/bin" ]] && env_args+=("PATH=$casedir/bin:$PATH")
+  [[ -d "$casedir/bin" ]] && env_args+=("PATH=$casedir/bin:$PATH")
 
-	stdin_file="/dev/null"
-	[[ -f "$casedir/stdin" ]] && stdin_file="$casedir/stdin"
+  stdin_file="/dev/null"
+  [[ -f "$casedir/stdin" ]] && stdin_file="$casedir/stdin"
 
-	set +e
-	out="$(env "${env_args[@]}" bash "$scripts/$cmd" "${args[@]}" <"$stdin_file" 2>/dev/null)"
-	code=$?
-	set -e
+  set +e
+  out="$(env "${env_args[@]}" bash "$scripts/$cmd" "${args[@]}" <"$stdin_file" 2>/dev/null)"
+  code=$?
+  set -e
 
-	want_code=0
-	[[ -f "$casedir/expected.exit" ]] && want_code="$(cat "$casedir/expected.exit")"
+  want_code=0
+  [[ -f "$casedir/expected.exit" ]] && want_code="$(cat "$casedir/expected.exit")"
 
-	ok=1
-	if [[ "$code" != "$want_code" ]]; then
-		ok=0
-		echo "FAIL $name: exit $code, want $want_code"
-	fi
-	if [[ -f "$casedir/expected.out" ]]; then
-		want="$(cat "$casedir/expected.out")"
-		if [[ "$out" != "$want" ]]; then
-			ok=0
-			echo "FAIL $name: stdout mismatch"
-			echo "  got:  $out"
-			echo "  want: $want"
-		fi
-	fi
-	if [[ "$ok" == 1 ]]; then
-		echo "ok   $name"
-	else
-		fail=1
-	fi
+  ok=1
+  if [[ "$code" != "$want_code" ]]; then
+    ok=0
+    echo "FAIL $name: exit $code, want $want_code"
+  fi
+  if [[ -f "$casedir/expected.out" ]]; then
+    want="$(cat "$casedir/expected.out")"
+    if [[ "$out" != "$want" ]]; then
+      ok=0
+      echo "FAIL $name: stdout mismatch"
+      echo "  got:  $out"
+      echo "  want: $want"
+    fi
+  fi
+  if [[ "$ok" == 1 ]]; then
+    echo "ok   $name"
+  else
+    fail=1
+  fi
 done < <(find "$fixtures" -mindepth 2 -maxdepth 2 -type d -print0 | sort -z)
 
 echo "---"

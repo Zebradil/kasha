@@ -7,7 +7,11 @@
 #   * with the box made unreachable (off-LAN), the SAME config substitutes the
 #     next path from the remote cache instead — within `connect-timeout`.
 # The remote cache is stood up as a second kasha-box instance. Linux-only (VM).
-{ pkgs, boxModule, consumerModule }:
+{
+  pkgs,
+  boxModule,
+  consumerModule,
+}:
 let
   boxPort = 5000;
   remotePort = 5001;
@@ -31,7 +35,10 @@ pkgs.testers.runNixOSTest {
   nodes = {
     box = { ... }: {
       imports = [ boxModule ];
-      services.kasha-box = { enable = true; port = boxPort; };
+      services.kasha-box = {
+        enable = true;
+        port = boxPort;
+      };
       nix.settings.experimental-features = [ "nix-command" ];
       # Seed lives only on the box.
       virtualisation.additionalPaths = [ boxOnlySeed ];
@@ -40,7 +47,10 @@ pkgs.testers.runNixOSTest {
     # The remote cache, stood up as a second box instance.
     remote = { ... }: {
       imports = [ boxModule ];
-      services.kasha-box = { enable = true; port = remotePort; };
+      services.kasha-box = {
+        enable = true;
+        port = remotePort;
+      };
       nix.settings.experimental-features = [ "nix-command" ];
       # Seed lives only on the remote.
       virtualisation.additionalPaths = [ remoteOnlySeed ];

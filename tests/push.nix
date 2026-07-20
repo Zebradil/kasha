@@ -14,8 +14,7 @@ let
   # signing key. Public half is trusted by the box; the client signs with the
   # secret half out-of-band. NOT a security issue — test-only, like the ssh keys.
   signPublicKey = "kasha-push-test-1:GjobTMnaEc8bB0ccSdA/vvPLLKMMFAHuq/siqLDVVuM=";
-  signSecretKey =
-    "kasha-push-test-1:orF8lRzcbfzQ2ueM6V9/Ij1wB6mDRnkenklqs602JxAaOhtMydoRzxsHRxxJ0D++88ssowwUAe6r+yKosNVW4w==";
+  signSecretKey = "kasha-push-test-1:orF8lRzcbfzQ2ueM6V9/Ij1wB6mDRnkenklqs602JxAaOhtMydoRzxsHRxxJ0D++88ssowwUAe6r+yKosNVW4w==";
 
   # INPUT-addressed seeds (not `nix-store --add`, which is content-addressed and
   # self-verifies by hash — making the require-sigs gate vacuous, the exact trap
@@ -42,10 +41,13 @@ pkgs.testers.runNixOSTest {
       nix.settings.experimental-features = [ "nix-command" ];
     };
 
-    client = { ... }: {
+    client = _: {
       nix.settings.experimental-features = [ "nix-command" ];
       # The seeds live only on the client to start; the box gets them via push.
-      virtualisation.additionalPaths = [ signedSeed unsignedSeed ];
+      virtualisation.additionalPaths = [
+        signedSeed
+        unsignedSeed
+      ];
     };
   };
 

@@ -1,2 +1,2 @@
-s3://cache?endpoint=r2.example&region=auto /nix/store/aaa-root
-s3://cache?endpoint=r2.example&region=auto /nix/store/bbb-root
+s3://cache?endpoint=r2.example&region=auto /nix/store/aaa.drv
+s3://cache?endpoint=r2.example&region=auto /nix/store/bbb.drv

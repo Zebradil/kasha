@@ -59,12 +59,23 @@ pkgs.testers.runNixOSTest {
 
       environment.etc."kasha-test/manifests/${gen}.json".text = manifest;
       systemd.services."kasha-mirror-up-${flake}" = {
-        path = [ pkgs.coreutils pkgs.openssh ];
+        path = [
+          pkgs.coreutils
+          pkgs.openssh
+        ];
         environment = {
           KASHA_AWS = "${pkgs.writeShellScript "kasha-test-aws-up" ''
             set -euo pipefail
-            if [[ "$1 $2 $3" == "s3 ls --recursive" ]]; then
-              ${pkgs.openssh}/bin/ssh root@remote 'if [ -d /var/lib/kasha-test/roots/${flake} ]; then for p in /var/lib/kasha-test/roots/${flake}/*.json; do [ -e "$p" ] && printf "2026-07-05 00:00:00        100 roots/${flake}/%s\n" "$(basename "$p")"; done; fi'
+            if [[ "$1 $2" == "s3api list-objects-v2" ]]; then
+              # Emit s3api-style JSON Contents from the remote's published manifests.
+              printf '{"Contents":['
+              first=1
+              for p in $(${pkgs.openssh}/bin/ssh root@remote 'ls /var/lib/kasha-test/roots/${flake}/*.json 2>/dev/null || true'); do
+                [ "$first" = 1 ] || printf ','
+                printf '{"Key":"roots/${flake}/%s"}' "$(basename "$p")"
+                first=0
+              done
+              printf ']}\n'
             elif [[ "$1 $2 $3" == "s3 cp -" ]]; then
               key="''${4#s3://kasha-test-cache/roots/${flake}/}"
               body="$(mktemp)"
@@ -89,9 +100,12 @@ pkgs.testers.runNixOSTest {
       };
     };
 
-    client = { ... }: {
+    client = _: {
       nix.settings.experimental-features = [ "nix-command" ];
-      virtualisation.additionalPaths = [ localSeed localDep ];
+      virtualisation.additionalPaths = [
+        localSeed
+        localDep
+      ];
     };
   };
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Emit and publish a generation's root manifest (ADR-0003, ADR-0006).
 #
-# Given a generation's already-built, store-valid top-level output paths (stdin,
-# one per line), emit roots/<flake>/<gen>.json describing those roots ONLY —
-# never their closures. A reader expands a root into its full closure via
-# `nix copy`'s own closure-awareness, so manifests never enumerate closures.
+# Each root is a top-level output paired with its derivation: stdin is one
+# tab-separated `<outPath>\t<drvPath>` line per root. emit roots/<flake>/<gen>.json
+# (version 2) listing those `{outPath, drvPath}` objects ONLY — never their
+# closures. The box does not `nix copy` the root output (the top-level output is
+# absent from every cache: CI ships only its `.drv` recipe); instead it copies
+# the recipe from the remote and substitutes the drv's input output-closure,
+# minus the top output (see mirror-down.sh). Future GC roots the outPath.
 #
 # Interface (ADR-0006 env-in -> stdout-out): the manifest JSON is written to
 # stdout. When KASHA_TARGET is set the same bytes are published to
@@ -17,7 +20,7 @@
 #   KASHA_GEN        gen-id                                (required)
 #   KASHA_TIMESTAMP  ISO-8601 UTC stamp                    (optional; default: now)
 #   KASHA_TARGET     s3://bucket?endpoint=...&region=...   (optional; publish)
-# Stdin: store paths, one per line (pre-resolved, store-valid; not re-built).
+# Stdin: tab-separated `<outPath>\t<drvPath>` lines (pre-resolved, store-valid).
 set -euo pipefail
 
 flake="${KASHA_FLAKE:?KASHA_FLAKE required}"
@@ -27,17 +30,18 @@ timestamp="${KASHA_TIMESTAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 # ponytail: trust the caller's paths are already built and store-valid (issue
 # precondition); we never build or expand closures — roots only (ADR-0003).
 manifest="$(jq -Rn \
-	--arg flake "$flake" \
-	--arg gen "$gen" \
-	--arg timestamp "$timestamp" \
-	'{flake: $flake, gen: $gen, timestamp: $timestamp,
-	  roots: [inputs | select(test("\\S"))] | unique}')"
+  --arg flake "$flake" \
+  --arg gen "$gen" \
+  --arg timestamp "$timestamp" \
+  '{version: 2, flake: $flake, gen: $gen, timestamp: $timestamp,
+	  roots: [inputs | select(test("\\S")) | split("\t")
+	          | {outPath: .[0], drvPath: .[1]}] | unique_by(.outPath)}')"
 
 # Refuse an empty manifest: shipping zero roots would silently clobber a good
 # manifest with nothing (ADR-0003 precondition: caller provides store paths).
 [[ "$(jq '.roots | length' <<<"$manifest")" -gt 0 ]] || {
-	echo "emit-root-manifest: no roots on stdin" >&2
-	exit 1
+  echo "emit-root-manifest: no roots on stdin" >&2
+  exit 1
 }
 
 printf '%s\n' "$manifest"
@@ -58,17 +62,17 @@ query=""
 aws_opts=()
 IFS='&' read -ra params <<<"$query"
 for p in "${params[@]}"; do
-	case "$p" in
-	endpoint=*)
-		endpoint="${p#endpoint=}"
-		# nix S3 targets often give a scheme-less host; aws needs a URL.
-		[[ "$endpoint" == *://* ]] || endpoint="https://$endpoint"
-		aws_opts+=(--endpoint-url "$endpoint")
-		;;
-	region=*) aws_opts+=(--region "${p#region=}") ;;
-	esac
+  case "$p" in
+  endpoint=*)
+    endpoint="${p#endpoint=}"
+    # nix S3 targets often give a scheme-less host; aws needs a URL.
+    [[ "$endpoint" == *://* ]] || endpoint="https://$endpoint"
+    aws_opts+=(--endpoint-url "$endpoint")
+    ;;
+  region=*) aws_opts+=(--region "${p#region=}") ;;
+  esac
 done
 
-printf '%s\n' "$manifest" |
-	aws "${aws_opts[@]}" s3 cp - "s3://$bucket/roots/$flake/$gen.json" \
-		--content-type application/json >/dev/null
+printf '%s\n' "$manifest" \
+  | aws "${aws_opts[@]}" s3 cp - "s3://$bucket/roots/$flake/$gen.json" \
+    --content-type application/json >/dev/null

@@ -1,1 +1,1 @@
-{"roots":["/nix/store/aaa-root","/nix/store/bbb-root"]}
+{"version":2,"roots":[{"outPath":"/nix/store/aaa-out","drvPath":"/nix/store/aaa.drv"},{"outPath":"/nix/store/bbb-out","drvPath":"/nix/store/bbb.drv"}]}

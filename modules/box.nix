@@ -5,7 +5,12 @@
 # key (ADR-0004): it serves paths exactly as signed upstream; clients verify them
 # under the existing remote-cache public key. This module is the reusable box; the
 # consumer (znix) wires it into a container/k3s deployment (see deploy/README.md).
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.services.kasha-box;
 
@@ -20,13 +25,28 @@ let
 
   mirrorDown = pkgs.writeShellApplication {
     name = "kasha-mirror-down";
-    runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+    runtimeInputs = [
+      pkgs.awscli2
+      pkgs.coreutils
+      pkgs.gnugrep
+      pkgs.gnused
+      pkgs.jq
+      pkgs.nix
+      pkgs.util-linux
+    ];
     text = builtins.readFile ../scripts/mirror-down.sh;
   };
 
   mirrorUp = pkgs.writeShellApplication {
     name = "kasha-mirror-up";
-    runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+    runtimeInputs = [
+      pkgs.awscli2
+      pkgs.coreutils
+      pkgs.gnused
+      pkgs.jq
+      pkgs.nix
+      pkgs.util-linux
+    ];
     text = builtins.readFile ../scripts/mirror-up.sh;
   };
 in
@@ -160,155 +180,188 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (lib.mkMerge [
-    {
-      services.harmonia.cache = {
-        enable = true;
-        # No signing key on the box (ADR-0004): serve upstream signatures as-is.
-        signKeyPaths = [ ];
-        settings.bind = "[::]:${toString cfg.port}";
-      };
-
-      # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-
-      # activated, so gate the socket (not just the service) and run at boot: a bad
-      # mount fails the box loudly at boot instead of quietly on the first request.
-      #
-      # harmonia.socket lives in early-boot sockets.target, which is ordered *before*
-      # basic.target. A unit with default dependencies is ordered *after* basic.target,
-      # so gating the socket from there forms an ordering cycle (systemd then drops the
-      # socket). Opt out of default deps and order the guard right after the store is
-      # mounted; the socket's Requires= (requiredBy below) pulls it into the boot
-      # transaction, so failure still stops the box loudly at boot.
-      systemd.services.kasha-box-store-guard = {
-        description = "kasha box: reject NFS-backed nix store (ADR-0002)";
-        unitConfig.DefaultDependencies = false;
-        after = [ "local-fs.target" ];
-        before = [ "harmonia.socket" "harmonia.service" ];
-        requiredBy = [ "harmonia.socket" "harmonia.service" ];
-        environment.KASHA_STORE_DIR = cfg.storeDir;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = lib.getExe storeGuard;
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
+      {
+        services.harmonia.cache = {
+          enable = true;
+          # No signing key on the box (ADR-0004): serve upstream signatures as-is.
+          signKeyPaths = [ ];
+          settings.bind = "[::]:${toString cfg.port}";
         };
-      };
 
-      networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
-    }
-
-    # Push path (reverse flow): accept ssh-ng pushes at LAN speed, serve them
-    # immediately over the same harmonia HTTP endpoint (no up-mirror dependency).
-    (lib.mkIf cfg.push.enable {
-      # The push gate: trust the existing remote-cache key(s) for signature checks
-      # (a listOf definition, so appended to nix's cache.nixos.org default — not a
-      # replacement). require-sigs stays on so unsigned pushes are rejected; the box
-      # still signs nothing itself (ADR-0004). Only meaningful for the push path, so
-      # scoped here rather than applied to every box.
-      nix.settings.require-sigs = true;
-      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
-
-      services.openssh = {
-        enable = true;
-        settings = {
-          PasswordAuthentication = false;
-          KbdInteractiveAuthentication = false;
+        # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-
+        # activated, so gate the socket (not just the service) and run at boot: a bad
+        # mount fails the box loudly at boot instead of quietly on the first request.
+        #
+        # harmonia.socket lives in early-boot sockets.target, which is ordered *before*
+        # basic.target. A unit with default dependencies is ordered *after* basic.target,
+        # so gating the socket from there forms an ordering cycle (systemd then drops the
+        # socket). Opt out of default deps and order the guard right after the store is
+        # mounted; the socket's Requires= (requiredBy below) pulls it into the boot
+        # transaction, so failure still stops the box loudly at boot.
+        systemd.services.kasha-box-store-guard = {
+          description = "kasha box: reject NFS-backed nix store (ADR-0002)";
+          unitConfig.DefaultDependencies = false;
+          after = [ "local-fs.target" ];
+          before = [
+            "harmonia.socket"
+            "harmonia.service"
+          ];
+          requiredBy = [
+            "harmonia.socket"
+            "harmonia.service"
+          ];
+          environment.KASHA_STORE_DIR = cfg.storeDir;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = lib.getExe storeGuard;
+          };
         };
-      };
 
-      # A normal (non-root) user: NOT a nix trusted-user, so its pushes go through
-      # signature verification (require-sigs) rather than bypassing it. The client
-      # pushes as `ssh-ng://${user}@box`.
-      users.users.${cfg.push.user} = {
-        isNormalUser = true;
-        openssh.authorizedKeys.keys = cfg.push.authorizedKeys;
-      };
-    })
+        networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
+      }
 
-    (lib.mkIf cfg.mirrorDown.enable {
-      assertions = [
-        {
-          assertion = cfg.mirrorDown.flakes != [ ];
-          message = "services.kasha-box.mirrorDown.flakes must list at least one roots/<flake>/ prefix.";
-        }
-        {
-          assertion = lib.hasPrefix "s3://" cfg.mirrorDown.remoteCache;
-          message = "services.kasha-box.mirrorDown.remoteCache must be an s3:// URL so roots/<flake>/ can be listed.";
-        }
-      ];
+      # Push path (reverse flow): accept ssh-ng pushes at LAN speed, serve them
+      # immediately over the same harmonia HTTP endpoint (no up-mirror dependency).
+      (lib.mkIf cfg.push.enable {
+        # The push gate: trust the existing remote-cache key(s) for signature checks
+        # (a listOf definition, so appended to nix's cache.nixos.org default — not a
+        # replacement). require-sigs stays on so unsigned pushes are rejected; the box
+        # still signs nothing itself (ADR-0004). Only meaningful for the push path, so
+        # scoped here rather than applied to every box.
+        nix.settings.require-sigs = true;
+        nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
 
-      nix.settings.require-sigs = true;
-      nix.settings.experimental-features = [ "nix-command" ];
-      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
-
-      systemd.services = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-down-${flake}" {
-        description = "kasha box: mirror ${flake} roots from remote cache";
-        after = [ "network-online.target" ];
-        wants = [ "network-online.target" ];
-        serviceConfig = {
-          Type = "oneshot";
-          StateDirectory = "kasha";
+        services.openssh = {
+          enable = true;
+          settings = {
+            PasswordAuthentication = false;
+            KbdInteractiveAuthentication = false;
+          };
         };
-        environment = {
-          KASHA_REMOTE = cfg.mirrorDown.remoteCache;
-          KASHA_FLAKE = flake;
-          KASHA_STATE_DIR = cfg.mirrorDown.stateDir;
-        };
-        path = [ pkgs.nix ];
-        script = lib.getExe mirrorDown;
-      }) cfg.mirrorDown.flakes);
 
-      systemd.timers = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-down-${flake}" {
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnBootSec = "1min";
-          OnUnitActiveSec = cfg.mirrorDown.interval;
-          Unit = "kasha-mirror-down-${flake}.service";
+        # A normal (non-root) user: NOT a nix trusted-user, so its pushes go through
+        # signature verification (require-sigs) rather than bypassing it. The client
+        # pushes as `ssh-ng://${user}@box`.
+        users.users.${cfg.push.user} = {
+          isNormalUser = true;
+          openssh.authorizedKeys.keys = cfg.push.authorizedKeys;
         };
-      }) cfg.mirrorDown.flakes);
-    })
+      })
 
-    (lib.mkIf cfg.mirrorUp.enable {
-      assertions = [
-        {
-          assertion = cfg.mirrorUp.flakes != [ ];
-          message = "services.kasha-box.mirrorUp.flakes must list at least one roots/<flake>/ prefix.";
-        }
-        {
-          assertion = lib.hasPrefix "s3://" cfg.mirrorUp.remoteCache;
-          message = "services.kasha-box.mirrorUp.remoteCache must be an s3:// URL so roots/<flake>/ can be listed and published.";
-        }
-      ];
+      (lib.mkIf cfg.mirrorDown.enable {
+        assertions = [
+          {
+            assertion = cfg.mirrorDown.flakes != [ ];
+            message = "services.kasha-box.mirrorDown.flakes must list at least one roots/<flake>/ prefix.";
+          }
+          {
+            assertion = lib.hasPrefix "s3://" cfg.mirrorDown.remoteCache;
+            message = "services.kasha-box.mirrorDown.remoteCache must be an s3:// URL so roots/<flake>/ can be listed.";
+          }
+        ];
 
-      nix.settings.require-sigs = true;
-      nix.settings.experimental-features = [ "nix-command" ];
-      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
-
-      systemd.services = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-up-${flake}" {
-        description = "kasha box: mirror ${flake} roots to remote cache";
-        after = [ "network-online.target" ];
-        wants = [ "network-online.target" ];
-        serviceConfig = {
-          Type = "oneshot";
-          StateDirectory = "kasha";
+        nix.settings = {
+          require-sigs = true;
+          experimental-features = [ "nix-command" ];
+          trusted-public-keys = cfg.trustedPublicKeys;
+          substituters = [ cfg.mirrorDown.remoteCache ];
         };
-        environment = {
-          KASHA_REMOTE = cfg.mirrorUp.remoteCache;
-          KASHA_FLAKE = flake;
-          KASHA_STATE_DIR = cfg.mirrorUp.stateDir;
-          KASHA_LOCAL_ROOTS_DIR = cfg.mirrorUp.localRootsDir;
-        };
-        path = [ pkgs.nix ];
-        script = lib.getExe mirrorUp;
-      }) cfg.mirrorUp.flakes);
 
-      systemd.timers = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-up-${flake}" {
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnBootSec = "1min";
-          OnUnitActiveSec = cfg.mirrorUp.interval;
-          Unit = "kasha-mirror-up-${flake}.service";
+        systemd.services = lib.listToAttrs (
+          map (
+            flake:
+            lib.nameValuePair "kasha-mirror-down-${flake}" {
+              description = "kasha box: mirror ${flake} roots from remote cache";
+              after = [ "network-online.target" ];
+              wants = [ "network-online.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                StateDirectory = "kasha";
+              };
+              environment = {
+                KASHA_REMOTE = cfg.mirrorDown.remoteCache;
+                KASHA_FLAKE = flake;
+                KASHA_STATE_DIR = cfg.mirrorDown.stateDir;
+              };
+              path = [ pkgs.nix ];
+              script = lib.getExe mirrorDown;
+            }
+          ) cfg.mirrorDown.flakes
+        );
+
+        systemd.timers = lib.listToAttrs (
+          map (
+            flake:
+            lib.nameValuePair "kasha-mirror-down-${flake}" {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = "1min";
+                OnUnitActiveSec = cfg.mirrorDown.interval;
+                Unit = "kasha-mirror-down-${flake}.service";
+              };
+            }
+          ) cfg.mirrorDown.flakes
+        );
+      })
+
+      (lib.mkIf cfg.mirrorUp.enable {
+        assertions = [
+          {
+            assertion = cfg.mirrorUp.flakes != [ ];
+            message = "services.kasha-box.mirrorUp.flakes must list at least one roots/<flake>/ prefix.";
+          }
+          {
+            assertion = lib.hasPrefix "s3://" cfg.mirrorUp.remoteCache;
+            message = "services.kasha-box.mirrorUp.remoteCache must be an s3:// URL so roots/<flake>/ can be listed and published.";
+          }
+        ];
+
+        nix.settings = {
+          require-sigs = true;
+          experimental-features = [ "nix-command" ];
+          trusted-public-keys = cfg.trustedPublicKeys;
         };
-      }) cfg.mirrorUp.flakes);
-    })
-  ]);
+
+        systemd.services = lib.listToAttrs (
+          map (
+            flake:
+            lib.nameValuePair "kasha-mirror-up-${flake}" {
+              description = "kasha box: mirror ${flake} roots to remote cache";
+              after = [ "network-online.target" ];
+              wants = [ "network-online.target" ];
+              serviceConfig = {
+                Type = "oneshot";
+                StateDirectory = "kasha";
+              };
+              environment = {
+                KASHA_REMOTE = cfg.mirrorUp.remoteCache;
+                KASHA_FLAKE = flake;
+                KASHA_STATE_DIR = cfg.mirrorUp.stateDir;
+                KASHA_LOCAL_ROOTS_DIR = cfg.mirrorUp.localRootsDir;
+              };
+              path = [ pkgs.nix ];
+              script = lib.getExe mirrorUp;
+            }
+          ) cfg.mirrorUp.flakes
+        );
+
+        systemd.timers = lib.listToAttrs (
+          map (
+            flake:
+            lib.nameValuePair "kasha-mirror-up-${flake}" {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = "1min";
+                OnUnitActiveSec = cfg.mirrorUp.interval;
+                Unit = "kasha-mirror-up-${flake}.service";
+              };
+            }
+          ) cfg.mirrorUp.flakes
+        );
+      })
+    ]
+  );
 }

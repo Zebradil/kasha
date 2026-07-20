@@ -63,17 +63,24 @@ in
     # fail signature verification (nix trusts only cache.nixos.org by default) —
     # the "existing public key already trusted" acceptance criterion. This module
     # introduces no signing key (ADR-0004); it only declares trust in an existing one.
-    assertions = [{
-      assertion = cfg.trustedPublicKeys != [ ];
-      message = "services.kasha-consumer.trustedPublicKeys must list the remote-cache public key(s); otherwise off-LAN fallback paths fail signature verification.";
-    }];
+    assertions = [
+      {
+        assertion = cfg.trustedPublicKeys != [ ];
+        message = "services.kasha-consumer.trustedPublicKeys must list the remote-cache public key(s); otherwise off-LAN fallback paths fail signature verification.";
+      }
+    ];
 
     # Static selection: box first, remote cache second. Order is the on-LAN
     # preference; `connect-timeout` is the off-LAN fallback. mkForce so the box
     # genuinely leads — a leftover cache.nixos.org default must not race ahead of
     # the box on the LAN.
-    nix.settings.substituters = lib.mkForce [ cfg.boxEndpoint cfg.remoteCache ];
-    nix.settings.connect-timeout = cfg.connectTimeout;
-    nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
+    nix.settings = {
+      substituters = lib.mkForce [
+        cfg.boxEndpoint
+        cfg.remoteCache
+      ];
+      connect-timeout = cfg.connectTimeout;
+      trusted-public-keys = cfg.trustedPublicKeys;
+    };
   };
 }

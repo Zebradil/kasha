@@ -36,6 +36,7 @@ let
   topOut = builtins.unsafeDiscardStringContext remoteTop.outPath;
   topDrv = builtins.unsafeDiscardStringContext remoteTop.drvPath;
   depOut = builtins.unsafeDiscardStringContext remoteDep.outPath;
+  depDrv = builtins.unsafeDiscardStringContext remoteDep.drvPath;
   # The .drv as a *source* input (not a to-be-built derivation), so seeding it
   # into the remote store keeps the .drv file itself in the export closure —
   # a bare context-stripped string is not a real input and fails closure export.
@@ -104,10 +105,18 @@ pkgs.testers.runNixOSTest {
             printf '%s %s\n' "$1" "$2" >> /var/lib/kasha/mirror-down/copies
             exec ${pkgs.nix}/bin/nix copy --from http://remote:${toString port} "$2"
           ''}";
-          # Realise runs unstubbed (default nix-store --realise): realising the
-          # recipe's input drvs substitutes dep's output from the remote, while
-          # bash's (already-valid) output is a no-op and the top drv is never
-          # realised.
+          # Realise seam: the script hands us the recipe's input drvs. Record
+          # them, then substitute only dep from the remote. ponytail: the other
+          # input (bash's build toolchain) is substitutable from upstream in
+          # production but not seeded in this VM, so we don't realise it here —
+          # the assertions below prove dep.drv was in the set and the top drv
+          # never is.
+          KASHA_REALISE = "${pkgs.writeShellScript "kasha-test-realise" ''
+            set -euo pipefail
+            mkdir -p /var/lib/kasha/mirror-down
+            printf '%s\n' "$@" > /var/lib/kasha/mirror-down/realise-args
+            exec ${pkgs.nix}/bin/nix-store --realise ${depDrv}
+          ''}";
         };
       };
     };
@@ -141,6 +150,10 @@ pkgs.testers.runNixOSTest {
     box.succeed("nix-store --check-validity ${depOut}")
     box.fail("nix-store --check-validity ${topOut}")
     box.succeed("grep -q down-dep ${depOut}")
+    # The script realises the recipe's input derivations (dep.drv among them),
+    # never the top-level drv or output.
+    box.succeed("grep -qxF ${depDrv} /var/lib/kasha/mirror-down/realise-args")
+    box.fail("grep -qxF ${topDrv} /var/lib/kasha/mirror-down/realise-args")
 
     # Idempotent: second run sees the same generation and does no copy work.
     box.succeed("test $(wc -l < /var/lib/kasha/mirror-down/copies) = 1")

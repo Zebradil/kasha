@@ -8,6 +8,11 @@ store_dir="$data_root/nix/store"
 db_path="$data_root/nix/var/nix/db/db.sqlite"
 port="${KASHA_PORT:-5000}"
 
+# The image ships no /tmp and its root fs may be read-only; nix aborts with
+# "creating anonymous temporary file: No such file or directory" without a
+# writable temp dir. Point every child at one on the persistent data volume.
+export TMPDIR="$data_root/tmp"
+
 pids=()
 
 bool_enabled() {
@@ -31,7 +36,7 @@ stop_children() {
 trap stop_children TERM INT EXIT
 
 write_config() {
-  mkdir -p /etc/nix /run/harmonia "$data_root/nix/store" "$data_root/nix/var/nix/db" "$data_root/var/lib/kasha/roots"
+  mkdir -p /etc/nix /run/harmonia "$TMPDIR" "$data_root/nix/store" "$data_root/nix/var/nix/db" "$data_root/var/lib/kasha/roots"
   KASHA_STORE_DIR="$data_root/nix" kasha-check-store-fs
   nix-store --store "local?root=$data_root" --init
   cat >/run/kasha-nix <<EOF

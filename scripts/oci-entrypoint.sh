@@ -40,10 +40,14 @@ exec nix --store 'local?root=$data_root' "\$@"
 EOF
 	chmod +x /run/kasha-nix
 
+	# extra-, not plain: a plain assignment replaces nix's built-in default and
+	# drops cache.nixos.org, so upstream paths (bootstrap-tools, glibc, …) that
+	# carry only a cache.nixos.org signature get rejected on mirror-down. extra-
+	# appends the box's own trusted key(s) to that default.
 	cat >/etc/nix/nix.conf <<EOF
 experimental-features = nix-command flakes
 require-sigs = true
-trusted-public-keys = ${KASHA_TRUSTED_PUBLIC_KEYS:-}
+extra-trusted-public-keys = ${KASHA_TRUSTED_PUBLIC_KEYS:-}
 EOF
 
 	cat >/run/harmonia.toml <<EOF

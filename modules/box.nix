@@ -9,6 +9,17 @@
 let
   cfg = config.services.kasha-box;
 
+  # FlakeHub Cache: znix's upstream cache. The box realises a generation's input
+  # closure from remote + upstream, so it must trust and reach FlakeHub too.
+  flakehubCache = "https://cache.flakehub.com";
+  flakehubKeys = [
+    "cache.flakehub.com-3:hJuILl5sVK4iKm86JzgdXW12Y2Hwd5G07qKtHTOcDCM="
+    "cache.flakehub.com-4:Asi8qIv291s0aYLyH6IOnr5Kf6+OF14WVjkE6t3xMio="
+    "cache.flakehub.com-5:zB96CRlL7tiPtzA9/WKyPkp3A2vqxqgdgyTVNGShPDU="
+    "cache.flakehub.com-6:W4EGFwAGgBj3he7c5fNh9NkOXw0PUVaxygCVKeuvaqU="
+    "cache.flakehub.com-7:mvxJ2DZVHn/kRxlIaxYNMuDG1OvMckZu32um1TadOR8="
+  ];
+
   # The NFS guard, packaged from the same script the fixture tests exercise.
   # writeShellApplication runs shellcheck at build time, so a broken guard fails
   # the build rather than the box at 3am.
@@ -20,7 +31,7 @@ let
 
   mirrorDown = pkgs.writeShellApplication {
     name = "kasha-mirror-down";
-    runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+    runtimeInputs = [ pkgs.awscli2 pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
     text = builtins.readFile ../scripts/mirror-down.sh;
   };
 
@@ -238,7 +249,12 @@ in
 
       nix.settings.require-sigs = true;
       nix.settings.experimental-features = [ "nix-command" ];
-      nix.settings.trusted-public-keys = cfg.trustedPublicKeys;
+      nix.settings.trusted-public-keys = cfg.trustedPublicKeys ++ flakehubKeys;
+      # Realising a generation's input closure substitutes from the remote (holds
+      # the CI-built outputs) plus upstream (nixpkgs et al.). cache.nixos.org is a
+      # nix default; add the remote and FlakeHub so `nix-store --realise` reaches
+      # every source the payload can live in.
+      nix.settings.substituters = [ cfg.mirrorDown.remoteCache flakehubCache ];
 
       systemd.services = lib.listToAttrs (map (flake: lib.nameValuePair "kasha-mirror-down-${flake}" {
         description = "kasha box: mirror ${flake} roots from remote cache";

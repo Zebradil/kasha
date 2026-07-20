@@ -31,7 +31,7 @@
               text = builtins.readFile file;
             };
             checkStoreFs = mkScript "kasha-check-store-fs" ./scripts/check-store-fs.sh [ pkgs.coreutils ];
-            mirrorDown = mkScript "kasha-mirror-down" ./scripts/mirror-down.sh [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
+            mirrorDown = mkScript "kasha-mirror-down" ./scripts/mirror-down.sh [ pkgs.awscli2 pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
             mirrorUp = mkScript "kasha-mirror-up" ./scripts/mirror-up.sh [ pkgs.awscli2 pkgs.coreutils pkgs.gnused pkgs.jq pkgs.nix pkgs.util-linux ];
             ociEntrypoint = pkgs.writeShellApplication {
               name = "oci-entrypoint";

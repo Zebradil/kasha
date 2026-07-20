@@ -2,8 +2,17 @@
 # Mirror new root manifests from the remote cache down into the box store.
 #
 # Env-in -> stdout-out (ADR-0006): LIST remote roots/<flake>/, diff against a
-# flat last-seen gen set, copy each new root with nix (closure expansion is nix's
-# job), then atomically publish the new seen set. Safe to re-run; overlap exits.
+# flat last-seen gen set, mirror each new generation, then atomically publish the
+# new seen set. Safe to re-run; overlap exits.
+#
+# Mirroring a root (a {outPath, drvPath} object, manifest version 2) never builds
+# a top-level — the box is Linux and cannot assemble a cross-system top output,
+# and no cache holds that output anyway (CI ships only the recipe). Instead:
+#   1. copy the recipe: `nix copy --from remote <drvPath>` (only the remote holds
+#      the .drv requisite closure; upstream caches store outputs, not .drv files),
+#   2. substitute the drv's input output-closure, minus the top output, from the
+#      box's configured substituters (remote + upstream) — all already cached, so
+#      nothing builds. Each consumer assembles its own top-level at deploy time.
 #
 # Env:
 #   KASHA_REMOTE      nix/S3 remote cache URL                  (required)
@@ -12,8 +21,9 @@
 #   KASHA_LIST_FILE   test seam: newline manifest keys/URLs    (optional)
 #   KASHA_MANIFEST_DIR test seam: local <gen>.json dir         (optional)
 #   KASHA_SEEN_FILE   test seam for dry-run decision tests     (optional)
-#   KASHA_DRY_RUN     print roots to copy, do not copy/state   (optional)
-#   KASHA_COPY        test seam: copy command                  (default: nix copy --from)
+#   KASHA_DRY_RUN     print planned recipe copies, no state    (optional)
+#   KASHA_COPY        test seam: recipe copy (default: nix copy --from)
+#   KASHA_REALISE     test seam: realise command (default: nix-store --realise)
 #   KASHA_AWS         test seam: aws command                   (default: aws)
 set -euo pipefail
 
@@ -22,6 +32,7 @@ flake="${KASHA_FLAKE:?KASHA_FLAKE required}"
 state_dir="${KASHA_STATE_DIR:-/var/lib/kasha/mirror-down}"
 aws="${KASHA_AWS:-aws}"
 nix="${KASHA_NIX:-nix}"
+realise="${KASHA_REALISE:-nix-store --realise}"
 
 target="${remote#s3://}"
 bucket="${target%%\?*}"
@@ -88,8 +99,8 @@ if [[ -n "${KASHA_DRY_RUN:-}" ]]; then
 	fi
 	while IFS= read -r gen; do
 		manifest="$(manifest_for "$gen")"
-		jq -r '.roots[]' <<<"$manifest" | while IFS= read -r root; do
-			printf '%s %s\n' "$remote" "$root"
+		jq -r '.roots[].drvPath' <<<"$manifest" | while IFS= read -r drvPath; do
+			printf '%s %s\n' "$remote" "$drvPath"
 		done
 	done <"$tmp/new"
 	exit 0
@@ -119,21 +130,34 @@ if [[ ! -s "$tmp.new" ]]; then
 fi
 
 # A single unresolvable root (e.g. an upstream path whose only signature isn't
-# trusted here) must not abort the whole run: copy every root, record only gens
-# that fully copied so the rest retry next timer, and exit non-zero so the miss
+# trusted here) must not abort the whole run: mirror every root, record only gens
+# that fully mirrored so the rest retry next timer, and exit non-zero so the miss
 # stays visible. Process-substitution (not a pipe) so gen_ok survives the loop.
 failed=0
 while IFS= read -r gen; do
 	manifest="$(manifest_for "$gen")"
 	gen_ok=1
-	while IFS= read -r root; do
+	while IFS=$'\t' read -r drvPath outPath; do
+		[[ -z "$drvPath" ]] && continue
+		# 1. Copy the recipe from the remote — only it holds the .drv closure.
 		if [[ -n "${KASHA_COPY:-}" ]]; then
 			# shellcheck disable=SC2086
-			$KASHA_COPY "$remote" "$root" || gen_ok=0
+			$KASHA_COPY "$remote" "$drvPath" || { gen_ok=0; continue; }
 		else
-			"$nix" copy --from "$remote" "$root" || gen_ok=0
+			"$nix" copy --from "$remote" "$drvPath" || { gen_ok=0; continue; }
 		fi
-	done < <(jq -r '.roots[]' <<<"$manifest")
+		# 2. Payload = the drv's input output-closure, minus .drv files, minus the
+		#    top output (which no cache holds — CI never built it, cross-system).
+		if ! reqs="$(nix-store --query --requisites --include-outputs "$drvPath")"; then
+			gen_ok=0
+			continue
+		fi
+		payload="$(printf '%s\n' "$reqs" | grep -v '\.drv$' | grep -vxF "$outPath" || true)"
+		[[ -z "$payload" ]] && continue
+		# 3. Substitute the payload (all cached; realise never builds a top-level).
+		# shellcheck disable=SC2086
+		$realise $payload || gen_ok=0
+	done < <(jq -r '.roots[] | [.drvPath, .outPath] | @tsv' <<<"$manifest")
 	if [[ "$gen_ok" == 1 ]]; then
 		printf '%s\n' "$gen" >>"$tmp.seen"
 		echo "kasha mirror-down: copied $flake/$gen"

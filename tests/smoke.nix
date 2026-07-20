@@ -26,7 +26,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.additionalPaths = [ seed ];
     };
 
-    client = { ... }: {
+    client = _: {
       nix.settings.experimental-features = [ "nix-command" ];
       # No local builders should be needed; the path must come from the box.
       nix.settings.substituters = pkgs.lib.mkForce [ ];

@@ -15,17 +15,17 @@ store_dir="${KASHA_STORE_DIR:-/nix}"
 # exercisable without a real NFS mount; production leaves it unset and we read
 # the live filesystem type. `stat -f -c %T` is GNU coreutils (the box is Linux).
 if [[ -z "${KASHA_STORE_FSTYPE:-}" && ! -d "$store_dir" ]]; then
-	echo "kasha: refusing to start: nix store '$store_dir' does not exist." >&2
-	exit 1
+  echo "kasha: refusing to start: nix store '$store_dir' does not exist." >&2
+  exit 1
 fi
 fstype="${KASHA_STORE_FSTYPE:-$(stat -f -c %T -- "$store_dir")}"
 
 case "$fstype" in
 nfs | nfs4)
-	echo "kasha: refusing to start: nix store '$store_dir' is on NFS ($fstype)." >&2
-	echo "kasha: the box store must be block storage — sqlite corrupts under NFS locking (ADR-0002)." >&2
-	exit 1
-	;;
+  echo "kasha: refusing to start: nix store '$store_dir' is on NFS ($fstype)." >&2
+  echo "kasha: the box store must be block storage — sqlite corrupts under NFS locking (ADR-0002)." >&2
+  exit 1
+  ;;
 esac
 
 echo "kasha: nix store '$store_dir' fstype '$fstype' OK (not NFS)."

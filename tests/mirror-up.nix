@@ -59,7 +59,10 @@ pkgs.testers.runNixOSTest {
 
       environment.etc."kasha-test/manifests/${gen}.json".text = manifest;
       systemd.services."kasha-mirror-up-${flake}" = {
-        path = [ pkgs.coreutils pkgs.openssh ];
+        path = [
+          pkgs.coreutils
+          pkgs.openssh
+        ];
         environment = {
           KASHA_AWS = "${pkgs.writeShellScript "kasha-test-aws-up" ''
             set -euo pipefail
@@ -97,9 +100,12 @@ pkgs.testers.runNixOSTest {
       };
     };
 
-    client = { ... }: {
+    client = _: {
       nix.settings.experimental-features = [ "nix-command" ];
-      virtualisation.additionalPaths = [ localSeed localDep ];
+      virtualisation.additionalPaths = [
+        localSeed
+        localDep
+      ];
     };
   };
 

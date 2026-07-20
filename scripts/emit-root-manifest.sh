@@ -30,18 +30,18 @@ timestamp="${KASHA_TIMESTAMP:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 # ponytail: trust the caller's paths are already built and store-valid (issue
 # precondition); we never build or expand closures — roots only (ADR-0003).
 manifest="$(jq -Rn \
-	--arg flake "$flake" \
-	--arg gen "$gen" \
-	--arg timestamp "$timestamp" \
-	'{version: 2, flake: $flake, gen: $gen, timestamp: $timestamp,
+  --arg flake "$flake" \
+  --arg gen "$gen" \
+  --arg timestamp "$timestamp" \
+  '{version: 2, flake: $flake, gen: $gen, timestamp: $timestamp,
 	  roots: [inputs | select(test("\\S")) | split("\t")
 	          | {outPath: .[0], drvPath: .[1]}] | unique_by(.outPath)}')"
 
 # Refuse an empty manifest: shipping zero roots would silently clobber a good
 # manifest with nothing (ADR-0003 precondition: caller provides store paths).
 [[ "$(jq '.roots | length' <<<"$manifest")" -gt 0 ]] || {
-	echo "emit-root-manifest: no roots on stdin" >&2
-	exit 1
+  echo "emit-root-manifest: no roots on stdin" >&2
+  exit 1
 }
 
 printf '%s\n' "$manifest"
@@ -62,17 +62,17 @@ query=""
 aws_opts=()
 IFS='&' read -ra params <<<"$query"
 for p in "${params[@]}"; do
-	case "$p" in
-	endpoint=*)
-		endpoint="${p#endpoint=}"
-		# nix S3 targets often give a scheme-less host; aws needs a URL.
-		[[ "$endpoint" == *://* ]] || endpoint="https://$endpoint"
-		aws_opts+=(--endpoint-url "$endpoint")
-		;;
-	region=*) aws_opts+=(--region "${p#region=}") ;;
-	esac
+  case "$p" in
+  endpoint=*)
+    endpoint="${p#endpoint=}"
+    # nix S3 targets often give a scheme-less host; aws needs a URL.
+    [[ "$endpoint" == *://* ]] || endpoint="https://$endpoint"
+    aws_opts+=(--endpoint-url "$endpoint")
+    ;;
+  region=*) aws_opts+=(--region "${p#region=}") ;;
+  esac
 done
 
-printf '%s\n' "$manifest" |
-	aws "${aws_opts[@]}" s3 cp - "s3://$bucket/roots/$flake/$gen.json" \
-		--content-type application/json >/dev/null
+printf '%s\n' "$manifest" \
+  | aws "${aws_opts[@]}" s3 cp - "s3://$bucket/roots/$flake/$gen.json" \
+    --content-type application/json >/dev/null

@@ -24,13 +24,19 @@ let
     name = "kasha-down-dep";
     inherit system;
     builder = bash;
-    args = [ "-c" "echo down-dep > $out" ];
+    args = [
+      "-c"
+      "echo down-dep > $out"
+    ];
   };
   remoteTop = derivation {
     name = "kasha-down-top";
     inherit system;
     builder = bash;
-    args = [ "-c" "mkdir -p $out; echo down-mirror > $out/file; ln -s ${remoteDep} $out/dep" ];
+    args = [
+      "-c"
+      "mkdir -p $out; echo down-mirror > $out/file; ln -s ${remoteDep} $out/dep"
+    ];
   };
 
   topOut = builtins.unsafeDiscardStringContext remoteTop.outPath;
@@ -48,12 +54,18 @@ pkgs.testers.runNixOSTest {
   nodes = {
     remote = { ... }: {
       imports = [ boxModule ];
-      services.kasha-box = { enable = true; inherit port; };
+      services.kasha-box = {
+        enable = true;
+        inherit port;
+      };
       nix.settings.experimental-features = [ "nix-command" ];
       # Seed the recipe (.drv closure, so the box can copy it) and the input
       # output (dep, so the box can substitute it). The top output is deliberately
       # NOT seeded: no cache holds it, and the box must never need it.
-      virtualisation.additionalPaths = [ topDrvDep remoteDep ];
+      virtualisation.additionalPaths = [
+        topDrvDep
+        remoteDep
+      ];
     };
 
     box = { pkgs, lib, ... }: {
@@ -70,8 +82,7 @@ pkgs.testers.runNixOSTest {
       };
       nix.settings.experimental-features = [ "nix-command" ];
       # The realise step substitutes from the box's substituters; point them at
-      # the remote harmonia (mkForce over the module's s3 + FlakeHub defaults,
-      # which are unreachable in the VM).
+      # the remote harmonia (mkForce over the module's defaults, which are unreachable in the VM).
       nix.settings.substituters = lib.mkForce [ "http://remote:${toString port}" ];
 
       # The real script lists S3 roots. For the VM demo, serve the same seam with

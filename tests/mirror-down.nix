@@ -36,6 +36,10 @@ let
   topOut = builtins.unsafeDiscardStringContext remoteTop.outPath;
   topDrv = builtins.unsafeDiscardStringContext remoteTop.drvPath;
   depOut = builtins.unsafeDiscardStringContext remoteDep.outPath;
+  # The .drv as a *source* input (not a to-be-built derivation), so seeding it
+  # into the remote store keeps the .drv file itself in the export closure —
+  # a bare context-stripped string is not a real input and fails closure export.
+  topDrvDep = builtins.unsafeDiscardOutputDependency remoteTop.drvPath;
 in
 pkgs.testers.runNixOSTest {
   name = "kasha-mirror-down";
@@ -48,7 +52,7 @@ pkgs.testers.runNixOSTest {
       # Seed the recipe (.drv closure, so the box can copy it) and the input
       # output (dep, so the box can substitute it). The top output is deliberately
       # NOT seeded: no cache holds it, and the box must never need it.
-      virtualisation.additionalPaths = [ topDrv remoteDep ];
+      virtualisation.additionalPaths = [ topDrvDep remoteDep ];
     };
 
     box = { pkgs, lib, ... }: {

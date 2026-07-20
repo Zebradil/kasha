@@ -118,19 +118,32 @@ if [[ ! -s "$tmp.new" ]]; then
 	exit 0
 fi
 
+# A single unresolvable root (e.g. an upstream path whose only signature isn't
+# trusted here) must not abort the whole run: copy every root, record only gens
+# that fully copied so the rest retry next timer, and exit non-zero so the miss
+# stays visible. Process-substitution (not a pipe) so gen_ok survives the loop.
+failed=0
 while IFS= read -r gen; do
 	manifest="$(manifest_for "$gen")"
-	jq -r '.roots[]' <<<"$manifest" | while IFS= read -r root; do
+	gen_ok=1
+	while IFS= read -r root; do
 		if [[ -n "${KASHA_COPY:-}" ]]; then
 			# shellcheck disable=SC2086
-			$KASHA_COPY "$remote" "$root"
+			$KASHA_COPY "$remote" "$root" || gen_ok=0
 		else
-			"$nix" copy --from "$remote" "$root"
+			"$nix" copy --from "$remote" "$root" || gen_ok=0
 		fi
-	done
-	printf '%s\n' "$gen" >>"$tmp.seen"
-	echo "kasha mirror-down: copied $flake/$gen"
+	done < <(jq -r '.roots[]' <<<"$manifest")
+	if [[ "$gen_ok" == 1 ]]; then
+		printf '%s\n' "$gen" >>"$tmp.seen"
+		echo "kasha mirror-down: copied $flake/$gen"
+	else
+		failed=1
+		echo "kasha mirror-down: $flake/$gen incomplete, will retry" >&2
+	fi
 done <"$tmp.new"
 
 sort -u "$tmp.seen" >"$tmp.next"
 mv "$tmp.next" "$seen"
+
+[[ "$failed" == 0 ]] || exit 1

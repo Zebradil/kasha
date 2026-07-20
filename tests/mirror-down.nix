@@ -104,23 +104,10 @@ pkgs.testers.runNixOSTest {
             printf '%s %s\n' "$1" "$2" >> /var/lib/kasha/mirror-down/copies
             exec ${pkgs.nix}/bin/nix copy --from http://remote:${toString port} "$2"
           ''}";
-          # Realise seam: record the computed payload, assert the top output is
-          # excluded, then substitute just the input output (dep) from the remote.
-          # ponytail: realising the whole build closure is nix's job (in
-          # production it substitutes from remote + upstream); the VM only proves
-          # the payload is right and the top output never gets built or fetched.
-          KASHA_REALISE = "${pkgs.writeShellScript "kasha-test-realise" ''
-            set -euo pipefail
-            mkdir -p /var/lib/kasha/mirror-down
-            printf '%s\n' "$@" > /var/lib/kasha/mirror-down/realise-args
-            for p in "$@"; do
-              if [[ "$p" == "${topOut}" ]]; then
-                echo "top output must be excluded from the realise payload" >&2
-                exit 1
-              fi
-            done
-            exec ${pkgs.nix}/bin/nix-store --realise ${depOut}
-          ''}";
+          # Realise runs unstubbed (default nix-store --realise): realising the
+          # recipe's input drvs substitutes dep's output from the remote, while
+          # bash's (already-valid) output is a no-op and the top drv is never
+          # realised.
         };
       };
     };
@@ -154,9 +141,6 @@ pkgs.testers.runNixOSTest {
     box.succeed("nix-store --check-validity ${depOut}")
     box.fail("nix-store --check-validity ${topOut}")
     box.succeed("grep -q down-dep ${depOut}")
-    # The computed payload includes the input output and excludes the top output.
-    box.succeed("grep -qxF ${depOut} /var/lib/kasha/mirror-down/realise-args")
-    box.fail("grep -qxF ${topOut} /var/lib/kasha/mirror-down/realise-args")
 
     # Idempotent: second run sees the same generation and does no copy work.
     box.succeed("test $(wc -l < /var/lib/kasha/mirror-down/copies) = 1")

@@ -10,9 +10,10 @@
 # and no cache holds that output anyway (CI ships only the recipe). Instead:
 #   1. copy the recipe: `nix copy --from remote <drvPath>` (only the remote holds
 #      the .drv requisite closure; upstream caches store outputs, not .drv files),
-#   2. substitute the drv's input output-closure, minus the top output, from the
-#      box's configured substituters (remote + upstream) — all already cached, so
-#      nothing builds. Each consumer assembles its own top-level at deploy time.
+#   2. realise the recipe's input derivations, which substitutes their (all cached)
+#      output closures from the box's configured substituters (remote + upstream)
+#      without building. The top-level output is never realised. Each consumer
+#      assembles its own top-level at deploy time.
 #
 # Env:
 #   KASHA_REMOTE      nix/S3 remote cache URL                  (required)
@@ -137,7 +138,7 @@ failed=0
 while IFS= read -r gen; do
 	manifest="$(manifest_for "$gen")"
 	gen_ok=1
-	while IFS=$'\t' read -r drvPath outPath; do
+	while IFS= read -r drvPath; do
 		[[ -z "$drvPath" ]] && continue
 		# 1. Copy the recipe from the remote — only it holds the .drv closure.
 		if [[ -n "${KASHA_COPY:-}" ]]; then
@@ -146,18 +147,21 @@ while IFS= read -r gen; do
 		else
 			"$nix" copy --from "$remote" "$drvPath" || { gen_ok=0; continue; }
 		fi
-		# 2. Payload = the drv's input output-closure, minus .drv files, minus the
-		#    top output (which no cache holds — CI never built it, cross-system).
-		if ! reqs="$(nix-store --query --requisites --include-outputs "$drvPath")"; then
+		# 2. Realise the recipe's input derivations. Their outputs are all cached,
+		#    so this substitutes the input output-closure (never builds), and the
+		#    top-level output is never realised — it is in no cache and is
+		#    cross-system unbuildable here; the consumer assembles it at deploy.
+		#    (--include-outputs is not usable: it lists only already-valid outputs,
+		#    and on a fresh box nothing is built yet.)
+		if ! refs="$(nix-store --query --references "$drvPath")"; then
 			gen_ok=0
 			continue
 		fi
-		payload="$(printf '%s\n' "$reqs" | grep -v '\.drv$' | grep -vxF "$outPath" || true)"
-		[[ -z "$payload" ]] && continue
-		# 3. Substitute the payload (all cached; realise never builds a top-level).
+		inputs="$(printf '%s\n' "$refs" | grep '\.drv$' || true)"
+		[[ -z "$inputs" ]] && continue
 		# shellcheck disable=SC2086
-		$realise $payload || gen_ok=0
-	done < <(jq -r '.roots[] | [.drvPath, .outPath] | @tsv' <<<"$manifest")
+		$realise $inputs || gen_ok=0
+	done < <(jq -r '.roots[].drvPath' <<<"$manifest")
 	if [[ "$gen_ok" == 1 ]]; then
 		printf '%s\n' "$gen" >>"$tmp.seen"
 		echo "kasha mirror-down: copied $flake/$gen"

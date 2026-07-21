@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stub: grant the lock (real flock is absent on darwin dev hosts).
+exit 0

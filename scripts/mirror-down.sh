@@ -132,7 +132,7 @@ fi
 
 # A single unresolvable root (e.g. an upstream path whose only signature isn't
 # trusted here) must not abort the whole run: mirror every root, record only gens
-# that fully mirrored so the rest retry next timer, and exit non-zero so the miss
+# whose recipe copied so the rest retry next timer, and exit non-zero so the miss
 # stays visible. Process-substitution (not a pipe) so gen_ok survives the loop.
 failed=0
 while IFS= read -r gen; do
@@ -161,10 +161,17 @@ while IFS= read -r gen; do
         continue
       }
     fi
-    # 2. Realise the recipe's input derivations. Their outputs are all cached,
-    #    so this substitutes the input output-closure (never builds), and the
-    #    top-level output is never realised — it is in no cache and is
-    #    cross-system unbuildable here; the consumer assembles it at deploy.
+    # 2. Pull, by substitution only, every input output whose whole closure the
+    #    caches hold. The box never builds (max-jobs 0, ADR-0002); the top-level
+    #    output is never realised (absent from every cache, cross-system
+    #    unbuildable — the consumer assembles it at deploy). An INCOMPLETE tree is
+    #    expected, not an error: znix CI ships only the leaves it built (the giant
+    #    assembly-tower roots are omitted, and a failed CI build leaves gaps), and
+    #    nix cannot register a path whose closure is missing a member. So
+    #    --keep-going pulls every path whose closure is fully available and skips
+    #    the rest; the consumer fetches the remainder from other caches or builds
+    #    it at deploy. Best-effort: a partial pull still counts as mirrored, so
+    #    the gen is not retried every timer forever.
     #    (--include-outputs is not usable: it lists only already-valid outputs,
     #    and on a fresh box nothing is built yet.)
     if ! refs="$(nix-store --query --references "$drvPath")"; then
@@ -174,11 +181,11 @@ while IFS= read -r gen; do
     inputs="$(printf '%s\n' "$refs" | grep '\.drv$' || true)"
     [[ -z "$inputs" ]] && continue
     # shellcheck disable=SC2086
-    $realise $inputs || gen_ok=0
+    $realise --keep-going $inputs || true
   done < <(jq -r '.roots[].drvPath' <<<"$manifest")
   if [[ "$gen_ok" == 1 ]]; then
     printf '%s\n' "$gen" >>"$tmp.seen"
-    echo "kasha mirror-down: copied $flake/$gen"
+    echo "kasha mirror-down: mirrored $flake/$gen"
   else
     failed=1
     echo "kasha mirror-down: $flake/$gen incomplete, will retry" >&2

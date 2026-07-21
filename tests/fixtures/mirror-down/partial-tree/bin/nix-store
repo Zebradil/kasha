@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub: only the recipe's input-derivation query is exercised here.
+if [[ "$1 $2" == "--query --references" ]]; then
+  echo /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input.drv
+fi
+exit 0

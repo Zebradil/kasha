@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub realise: a substitute-miss on a box that never builds (max-jobs 0).
+echo "error: some inputs could not be substituted (local builds are disabled, max-jobs = 0)" >&2
+exit 1

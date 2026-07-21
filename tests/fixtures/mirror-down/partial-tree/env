@@ -1,0 +1,15 @@
+# The recipe copies, but realising its inputs partly fails: some outputs aren't
+# in any cache (excluded assembly-tower leaves, or a path whose closure is
+# incomplete). The box never builds, so an incomplete tree is expected — the gen
+# must still count as mirrored (recorded seen, exit 0), not fail+retry forever.
+# Stubs: fake copy/realise/flock + a nix-store that answers the (non-seam)
+# --query --references call.
+# Re-runnable: after the first run the gen is seen, so re-runs hit "no new roots"
+# and still exit 0; stdout is not asserted for that reason.
+KASHA_REMOTE=s3://cache
+KASHA_FLAKE=znix
+KASHA_STATE_DIR=/tmp/kasha-mirror-down-partial-fixture
+KASHA_LIST_FILE=tests/fixtures/mirror-down/partial-tree/list
+KASHA_MANIFEST_DIR=tests/fixtures/mirror-down/partial-tree/manifests
+KASHA_COPY=true
+KASHA_REALISE=fake-realise

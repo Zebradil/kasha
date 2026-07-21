@@ -1,9 +1,10 @@
 {
+  "version": 2,
   "flake": "znix",
   "gen": "20260705-local",
   "timestamp": "2026-07-05T00:00:00Z",
   "roots": [
-    "/nix/store/aaa-root",
-    "/nix/store/bbb-root"
+    { "outPath": "/nix/store/aaa-root", "drvPath": "/nix/store/aaa.drv" },
+    { "outPath": "/nix/store/bbb-root", "drvPath": "/nix/store/bbb.drv" }
   ]
 }

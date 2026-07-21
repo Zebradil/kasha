@@ -14,9 +14,15 @@ let
     echo up-mirror > $out/file
   '';
   manifest = builtins.toJSON {
+    version = 2;
     inherit flake gen;
     timestamp = "2026-07-05T00:00:00Z";
-    roots = [ (builtins.unsafeDiscardStringContext "${localSeed}") ];
+    roots = [
+      {
+        outPath = builtins.unsafeDiscardStringContext "${localSeed}";
+        drvPath = builtins.unsafeDiscardStringContext localSeed.drvPath;
+      }
+    ];
   };
 in
 pkgs.testers.runNixOSTest {

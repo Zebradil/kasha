@@ -1,0 +1,6 @@
+KASHA_REMOTE=s3://cache
+KASHA_FLAKE=znix
+KASHA_STATE_DIR=/tmp/kasha-mirror-down-abandon-fixture
+KASHA_LIST_FILE=tests/fixtures/mirror-down/abandon-missing-recipe/list
+KASHA_MANIFEST_DIR=tests/fixtures/mirror-down/abandon-missing-recipe/manifests
+KASHA_COPY=fake-copy

@@ -134,32 +134,46 @@ fi
 # trusted here) must not abort the whole run: mirror every root, record only gens
 # that fully mirrored so the rest retry next timer, and exit non-zero so the miss
 # stays visible. Process-substitution (not a pipe) so gen_ok survives the loop.
+#
+# Permanent misses are the exception: a root with no recipe on the remote (null
+# drvPath, or a .drv the remote never held / GC'd) can never mirror, so retrying
+# it every timer spins forever. Such a gen is recorded as seen (abandoned) so the
+# churn stops; prune its manifest from the bucket with prune-unmirrorable-roots.sh.
 failed=0
 while IFS= read -r gen; do
   manifest="$(manifest_for "$gen")"
   gen_ok=1
+  gen_permanent=0
   while IFS= read -r drvPath; do
-    # A null/absent drvPath is a legacy or malformed root with no recipe to
-    # copy — `jq -r` renders JSON null as the string "null", which nix would
-    # read as an installable (`flake:null`). Skip it and fail the gen so the
-    # miss stays loud; such manifests must be pruned from the bucket by hand.
+    # A null/absent drvPath is a legacy or malformed root with no recipe to copy
+    # — `jq -r` renders JSON null as the string "null", which nix would read as
+    # an installable (`flake:null`). Unmirrorable for good: abandon the gen.
     if [[ -z "$drvPath" || "$drvPath" == null ]]; then
       echo "kasha mirror-down: $flake/$gen root has no drvPath, skipping" >&2
       gen_ok=0
+      gen_permanent=1
       continue
     fi
     # 1. Copy the recipe from the remote — only it holds the .drv closure.
+    #    Capture output so a definitive "path is not valid" (the remote never
+    #    held the recipe) is told apart from a transient copy failure.
     if [[ -n "${KASHA_COPY:-}" ]]; then
       # shellcheck disable=SC2086
-      $KASHA_COPY "$remote" "$drvPath" || {
-        gen_ok=0
-        continue
-      }
+      copy_out="$($KASHA_COPY "$remote" "$drvPath" 2>&1)" && copy_rc=0 || copy_rc=$?
     else
-      "$nix" copy --from "$remote" "$drvPath" || {
-        gen_ok=0
-        continue
-      }
+      copy_out="$("$nix" copy --from "$remote" "$drvPath" 2>&1)" && copy_rc=0 || copy_rc=$?
+    fi
+    if [[ "$copy_rc" != 0 ]]; then
+      printf '%s\n' "$copy_out" >&2
+      gen_ok=0
+      # ponytail: substring-match nix's classic "path '…' is not valid" — the
+      # signal that the remote genuinely lacks the recipe (legacy manifest,
+      # recipe never pushed / GC'd), so this gen can never mirror. Swap for a
+      # `nix path-info --store "$remote" "$drvPath"` probe if the wording drifts.
+      case "$copy_out" in
+      *"is not valid"*) gen_permanent=1 ;;
+      esac
+      continue
     fi
     # 2. Realise the recipe's input derivations. Their outputs are all cached,
     #    so this substitutes the input output-closure (never builds), and the
@@ -179,6 +193,12 @@ while IFS= read -r gen; do
   if [[ "$gen_ok" == 1 ]]; then
     printf '%s\n' "$gen" >>"$tmp.seen"
     echo "kasha mirror-down: copied $flake/$gen"
+  elif [[ "$gen_permanent" == 1 ]]; then
+    # Record as seen to stop retrying an unmirrorable gen every timer. Loud on
+    # stderr, but not a run failure — nothing here will ever succeed. Prune the
+    # manifest from the bucket with prune-unmirrorable-roots.sh.
+    printf '%s\n' "$gen" >>"$tmp.seen"
+    echo "kasha mirror-down: $flake/$gen unmirrorable, abandoning (recipe absent from remote)" >&2
   else
     failed=1
     echo "kasha mirror-down: $flake/$gen incomplete, will retry" >&2

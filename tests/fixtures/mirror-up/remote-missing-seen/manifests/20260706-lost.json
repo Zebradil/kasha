@@ -1,8 +1,9 @@
 {
+  "version": 2,
   "flake": "znix",
   "gen": "20260706-lost",
   "timestamp": "2026-07-06T00:00:00Z",
   "roots": [
-    "/nix/store/ccc-root"
+    { "outPath": "/nix/store/ccc-root", "drvPath": "/nix/store/ccc.drv" }
   ]
 }

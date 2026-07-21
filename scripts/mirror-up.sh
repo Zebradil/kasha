@@ -119,8 +119,8 @@ if [[ -n "${KASHA_DRY_RUN:-}" ]]; then
   fi
   while IFS= read -r gen; do
     manifest="$(manifest_for "$gen")"
-    jq -r '.roots[]' <<<"$manifest" | while IFS= read -r root; do
-      printf '%s %s\n' "$remote" "$root"
+    jq -r '.roots[].outPath' <<<"$manifest" | while IFS= read -r outPath; do
+      printf '%s %s\n' "$remote" "$outPath"
     done
   done <"$tmp/new"
   exit 0
@@ -152,12 +152,16 @@ fi
 
 while IFS= read -r gen; do
   manifest="$(manifest_for "$gen")"
-  jq -r '.roots[]' <<<"$manifest" | while IFS= read -r root; do
+  # Push the output closure. A v2 root is {outPath, drvPath}; the up direction is
+  # not symmetric with mirror-down — the box holds a real, same-system output
+  # (received via the reverse-flow push) and replicates it to the remote, whereas
+  # mirror-down can only pull the recipe. Copy outPath, never the whole object.
+  jq -r '.roots[].outPath' <<<"$manifest" | while IFS= read -r outPath; do
     if [[ -n "${KASHA_COPY:-}" ]]; then
       # shellcheck disable=SC2086
-      $KASHA_COPY "$remote" "$root"
+      $KASHA_COPY "$remote" "$outPath"
     else
-      "$nix" copy --to "$remote" "$root"
+      "$nix" copy --to "$remote" "$outPath"
     fi
   done
   publish_manifest "$gen" "$manifest"

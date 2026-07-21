@@ -28,6 +28,7 @@ let
     runtimeInputs = [
       pkgs.awscli2
       pkgs.coreutils
+      pkgs.gawk
       pkgs.gnugrep
       pkgs.gnused
       pkgs.jq

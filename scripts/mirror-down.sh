@@ -24,7 +24,7 @@
 #   KASHA_SEEN_FILE   test seam for dry-run decision tests     (optional)
 #   KASHA_DRY_RUN     print planned recipe copies, no state    (optional)
 #   KASHA_COPY        test seam: recipe copy (default: nix copy --from)
-#   KASHA_REALISE     test seam: realise command (default: nix-store --realise)
+#   KASHA_REALISE     test seam: realise command (default: substitute_inputs)
 #   KASHA_AWS         test seam: aws command                   (default: aws)
 set -euo pipefail
 
@@ -33,7 +33,28 @@ flake="${KASHA_FLAKE:?KASHA_FLAKE required}"
 state_dir="${KASHA_STATE_DIR:-/var/lib/kasha/mirror-down}"
 aws="${KASHA_AWS:-aws}"
 nix="${KASHA_NIX:-nix}"
-realise="${KASHA_REALISE:-nix-store --realise}"
+realise="${KASHA_REALISE:-substitute_inputs}"
+
+# Substitute (never build) the fetchable output closure of the given input
+# derivations — the default KASHA_REALISE. nix cannot realise a .drv whose output
+# isn't cached without building it, and the box forbids builds (max-jobs 0,
+# ADR-0002), so a plain `nix-store --realise` on such a drv floods stderr with
+# benign "these derivations will be built" / "Cannot build" / "platform mismatch"
+# noise before failing. Instead ask nix to only *categorize* the closure —
+# `--dry-run` never builds and exits 0 — and realise just the paths it reports
+# fetchable. Non-substitutable drvs (the incomplete-tree case) are skipped
+# silently; a real substituter failure still surfaces on the fetch itself.
+substitute_inputs() {
+  local drvs=() a
+  for a in "$@"; do [[ "$a" == --* ]] || drvs+=("$a"); done
+  [[ ${#drvs[@]} -eq 0 ]] && return 0
+  local fetch
+  fetch="$(nix-store --realise --dry-run --max-jobs 0 "${drvs[@]}" 2>&1 \
+    | awk '/will be fetched/{f=1;next} /will be (built|copied|substituted)/{f=0} f&&/^  \//{print $1}')"
+  [[ -z "$fetch" ]] && return 0
+  # shellcheck disable=SC2086
+  nix-store --realise --keep-going $fetch
+}
 
 target="${remote#s3://}"
 bucket="${target%%\?*}"
@@ -161,19 +182,17 @@ while IFS= read -r gen; do
         continue
       }
     fi
-    # 2. Pull, by substitution only, every input output whose whole closure the
-    #    caches hold. The box never builds (max-jobs 0, ADR-0002); the top-level
-    #    output is never realised (absent from every cache, cross-system
-    #    unbuildable — the consumer assembles it at deploy). An INCOMPLETE tree is
-    #    expected, not an error: znix CI ships only the leaves it built (the giant
-    #    assembly-tower roots are omitted, and a failed CI build leaves gaps), and
-    #    nix cannot register a path whose closure is missing a member. So
-    #    --keep-going pulls every path whose closure is fully available and skips
-    #    the rest; the consumer fetches the remainder from other caches or builds
-    #    it at deploy. Best-effort: a partial pull still counts as mirrored, so
-    #    the gen is not retried every timer forever.
-    #    (--include-outputs is not usable: it lists only already-valid outputs,
-    #    and on a fresh box nothing is built yet.)
+    # 2. Pull, by substitution only, the input outputs the caches hold.
+    #    substitute_inputs (default KASHA_REALISE) dry-run-categorizes the input
+    #    closure and realises only the paths nix reports fetchable. The box never
+    #    builds (max-jobs 0, ADR-0002); the top-level output is never realised
+    #    (absent from every cache, cross-system unbuildable — the consumer
+    #    assembles it at deploy). An INCOMPLETE tree is expected, not an error:
+    #    znix CI ships only the leaves it built (the giant assembly-tower roots are
+    #    omitted, and a failed CI build leaves gaps). Non-substitutable inputs are
+    #    skipped silently; the consumer fetches the remainder from other caches or
+    #    builds it at deploy. Best-effort: a partial pull still counts as mirrored,
+    #    so the gen is not retried every timer forever.
     if ! refs="$(nix-store --query --references "$drvPath")"; then
       gen_ok=0
       continue

@@ -66,9 +66,12 @@ unmirrorable() {
 
 [[ "$force" == 1 ]] || echo "prune-unmirrorable-roots: DRY RUN (pass --force to delete)" >&2
 
+# --output json | jq, the form mirror-down/mirror-up use against the real bucket:
+# `--query ... --output text` yields "None"/empty on some S3 endpoints, listing
+# nothing. list-objects-v2 exits 0 with null Contents, which jq drops to empty.
 "$aws" "${aws_opts[@]}" s3api list-objects-v2 --bucket "$bucket" \
-  --prefix "roots/$flake/" --query 'Contents[].Key' --output text \
-  | tr '\t' '\n' \
+  --prefix "roots/$flake/" --output json \
+  | jq -r '.Contents[]?.Key // empty' \
   | while IFS= read -r key; do
       [[ -z "$key" ]] && continue
       manifest="$("$aws" "${aws_opts[@]}" s3 cp "s3://$bucket/$key" -)"

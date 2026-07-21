@@ -13,7 +13,8 @@ s3api)
   action="$1"; shift
   case "$action" in
   list-objects-v2)
-    printf '%s\t%s\t%s\n' roots/znix/nullroot.json roots/znix/absent.json roots/znix/present.json
+    printf '{"Contents":[{"Key":"%s"},{"Key":"%s"},{"Key":"%s"}]}\n' \
+      roots/znix/nullroot.json roots/znix/absent.json roots/znix/present.json
     ;;
   head-object)
     key=""

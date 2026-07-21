@@ -188,6 +188,7 @@ in
           # No signing key on the box (ADR-0004): serve upstream signatures as-is.
           signKeyPaths = [ ];
           settings.bind = "[::]:${toString cfg.port}";
+          settings.enable_compression = true;
         };
 
         # Refuse to start on an NFS-backed store (ADR-0002). harmonia is socket-

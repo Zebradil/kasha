@@ -1,2 +1,0 @@
-KASHA_REMOTE=s3://cache?endpoint=r2.example&region=auto
-KASHA_FLAKE=znix

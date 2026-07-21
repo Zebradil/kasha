@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# remote never held this recipe
-echo "copying 0 paths..."
-echo "error: path '/nix/store/aaa.drv' is not valid" >&2
-exit 1

@@ -45,15 +45,30 @@ exec nix --store 'local?root=$data_root' "\$@"
 EOF
   chmod +x /run/kasha-nix
 
-  # extra-, not plain: a plain assignment replaces nix's built-in default and
-  # drops cache.nixos.org, so upstream paths (bootstrap-tools, glibc, …) that
-  # carry only a cache.nixos.org signature get rejected on mirror-down. extra-
-  # appends the box's own trusted key(s) to that default.
+  # store: every nix command must operate on the persistent /kasha store, not the
+  # image's read-only /nix. Without it, mirror-down's `nix copy` (KASHA_NIX carries
+  # an explicit --store) writes the recipe into /kasha, but its bare `nix-store
+  # --query/--realise` steps read the default /nix/store and report the recipe as
+  # "not valid", looping forever.
+  #
+  # extra-, not plain trusted-public-keys: a plain assignment replaces nix's
+  # built-in default and drops cache.nixos.org, so upstream paths (bootstrap-tools,
+  # glibc, …) that carry only a cache.nixos.org signature get rejected on
+  # mirror-down. extra- appends the box's own trusted key(s) to that default.
   cat >/etc/nix/nix.conf <<EOF
 experimental-features = nix-command flakes
+store = local?root=$data_root
 require-sigs = true
 extra-trusted-public-keys = ${KASHA_TRUSTED_PUBLIC_KEYS:-}
 EOF
+
+  # mirror-down realises each recipe's input output-closure by substitution, so
+  # the remote must be a substituter (matching the NixOS box module's
+  # `substituters = [ remoteCache ]`); otherwise custom inputs aren't found and
+  # nix falls back to building them.
+  if bool_enabled "${KASHA_MIRROR_DOWN_ENABLE:-}"; then
+    echo "substituters = ${KASHA_REMOTE:?KASHA_REMOTE required when mirror-down is enabled}" >>/etc/nix/nix.conf
+  fi
 
   cat >/run/harmonia.toml <<EOF
 bind = "[::]:$port"

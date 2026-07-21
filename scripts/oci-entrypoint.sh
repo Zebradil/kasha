@@ -55,10 +55,15 @@ EOF
   # built-in default and drops cache.nixos.org, so upstream paths (bootstrap-tools,
   # glibc, …) that carry only a cache.nixos.org signature get rejected on
   # mirror-down. extra- appends the box's own trusted key(s) to that default.
+  # max-jobs 0: the box is a cache mirror, never a builder. mirror-down realises
+  # each recipe's input closure by substitution only; a build-time-only input that
+  # no cache holds must fail as a clean substitute-miss (gen retried), not send nix
+  # into a local build that aborts on the container's missing nixbld group.
   cat >/etc/nix/nix.conf <<EOF
 experimental-features = nix-command flakes
 store = local?root=$data_root
 require-sigs = true
+max-jobs = 0
 extra-trusted-public-keys = ${KASHA_TRUSTED_PUBLIC_KEYS:-}
 EOF
 

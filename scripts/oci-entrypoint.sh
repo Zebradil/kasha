@@ -85,6 +85,7 @@ bind = "[::]:$port"
 workers = ${KASHA_WORKERS:-4}
 max_connection_rate = ${KASHA_MAX_CONNECTION_RATE:-256}
 priority = ${KASHA_PRIORITY:-50}
+enable_compression = true
 virtual_nix_store = "/nix/store"
 real_nix_store = "$store_dir"
 nix_db_path = "$db_path"

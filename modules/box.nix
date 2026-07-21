@@ -263,11 +263,17 @@ in
           }
         ];
 
+        # extra-, not plain: a plain trusted-public-keys/substituters replaces
+        # nix's cache.nixos.org default, so a recipe's upstream inputs (bootstrap
+        # tools, stdenv, a cross-system darwin gen's macOS-SDK, …) can neither be
+        # verified nor fetched and nix builds them — a doomed cross-system build
+        # on this Linux box that loops the mirror-down timer forever. extra-
+        # appends the box's key(s) and remote to nix's defaults.
         nix.settings = {
           require-sigs = true;
           experimental-features = [ "nix-command" ];
-          trusted-public-keys = cfg.trustedPublicKeys;
-          substituters = [ cfg.mirrorDown.remoteCache ];
+          extra-trusted-public-keys = cfg.trustedPublicKeys;
+          extra-substituters = [ cfg.mirrorDown.remoteCache ];
         };
 
         systemd.services = lib.listToAttrs (

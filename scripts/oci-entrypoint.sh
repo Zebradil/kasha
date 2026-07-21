@@ -63,11 +63,16 @@ extra-trusted-public-keys = ${KASHA_TRUSTED_PUBLIC_KEYS:-}
 EOF
 
   # mirror-down realises each recipe's input output-closure by substitution, so
-  # the remote must be a substituter (matching the NixOS box module's
-  # `substituters = [ remoteCache ]`); otherwise custom inputs aren't found and
+  # the remote must be a substituter; otherwise custom inputs aren't found and
   # nix falls back to building them.
+  #
+  # extra-, not plain substituters (same reason as extra-trusted-public-keys
+  # above): a plain assignment replaces nix's default and drops cache.nixos.org,
+  # so a recipe's upstream inputs (bootstrap-tools, stdenv, macOS-SDK for a
+  # cross-system darwin gen, …) can't be substituted and nix builds them — a
+  # doomed cross-system build on this Linux box that loops the timer forever.
   if bool_enabled "${KASHA_MIRROR_DOWN_ENABLE:-}"; then
-    echo "substituters = ${KASHA_REMOTE:?KASHA_REMOTE required when mirror-down is enabled}" >>/etc/nix/nix.conf
+    echo "extra-substituters = ${KASHA_REMOTE:?KASHA_REMOTE required when mirror-down is enabled}" >>/etc/nix/nix.conf
   fi
 
   cat >/run/harmonia.toml <<EOF

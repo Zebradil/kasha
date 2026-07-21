@@ -59,6 +59,7 @@
             mirrorDown = mkScript "kasha-mirror-down" ./scripts/mirror-down.sh [
               pkgs.awscli2
               pkgs.coreutils
+              pkgs.gawk
               pkgs.gnugrep
               pkgs.gnused
               pkgs.jq

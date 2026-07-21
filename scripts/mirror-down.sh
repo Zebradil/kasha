@@ -139,7 +139,15 @@ while IFS= read -r gen; do
   manifest="$(manifest_for "$gen")"
   gen_ok=1
   while IFS= read -r drvPath; do
-    [[ -z "$drvPath" ]] && continue
+    # A null/absent drvPath is a legacy or malformed root with no recipe to
+    # copy — `jq -r` renders JSON null as the string "null", which nix would
+    # read as an installable (`flake:null`). Skip it and fail the gen so the
+    # miss stays loud; such manifests must be pruned from the bucket by hand.
+    if [[ -z "$drvPath" || "$drvPath" == null ]]; then
+      echo "kasha mirror-down: $flake/$gen root has no drvPath, skipping" >&2
+      gen_ok=0
+      continue
+    fi
     # 1. Copy the recipe from the remote — only it holds the .drv closure.
     if [[ -n "${KASHA_COPY:-}" ]]; then
       # shellcheck disable=SC2086

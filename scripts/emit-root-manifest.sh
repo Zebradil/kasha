@@ -44,6 +44,14 @@ manifest="$(jq -Rn \
   exit 1
 }
 
+# A tab-less stdin line yields drvPath: null — a root the box can't mirror
+# (no recipe). Refuse it here rather than shipping a manifest that trips
+# mirror-down with `flake:null`. Each root needs `<outPath>\t<drvPath>`.
+[[ "$(jq '[.roots[] | select(.drvPath == null or .drvPath == "")] | length' <<<"$manifest")" -eq 0 ]] || {
+  echo "emit-root-manifest: root missing drvPath (need tab-separated <outPath> <drvPath>)" >&2
+  exit 1
+}
+
 printf '%s\n' "$manifest"
 
 [[ -z "${KASHA_TARGET:-}" ]] && exit 0

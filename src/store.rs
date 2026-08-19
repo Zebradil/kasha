@@ -3,7 +3,7 @@
 //! plus `state/` bookkeeping. The filesystem is the database; the in-memory
 //! index is rebuilt by scanning narinfos at boot.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -33,7 +33,10 @@ impl Store {
         for d in ["nar", "roots", "state/local-origin", "state/mirrored"] {
             fs::create_dir_all(root.join(d))?;
         }
-        let store = Store { root, index: RwLock::new(HashMap::new()) };
+        let store = Store {
+            root,
+            index: RwLock::new(HashMap::new()),
+        };
         store.scan()?;
         Ok(store)
     }
@@ -47,7 +50,9 @@ impl Store {
             let entry = entry?;
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            let Some(hash) = name.strip_suffix(".narinfo") else { continue };
+            let Some(hash) = name.strip_suffix(".narinfo") else {
+                continue;
+            };
             let text = fs::read_to_string(entry.path())?;
             match NarInfo::parse(&text) {
                 Ok(n) => {
@@ -64,12 +69,15 @@ impl Store {
         self.index.read().unwrap().len()
     }
 
+    #[cfg(test)]
     pub fn has(&self, store_hash: &str) -> bool {
         self.index.read().unwrap().contains_key(store_hash)
     }
 
     pub fn narinfo_path(&self, store_hash: &str) -> Result<PathBuf> {
-        Ok(self.root.join(format!("{}.narinfo", safe_component(store_hash)?)))
+        Ok(self
+            .root
+            .join(format!("{}.narinfo", safe_component(store_hash)?)))
     }
 
     pub fn nar_path(&self, file: &str) -> Result<PathBuf> {
@@ -151,11 +159,11 @@ impl Store {
     // --- state markers -----------------------------------------------------
 
     fn marker(&self, kind: &str, flake: &str, gen_id: &str) -> Result<PathBuf> {
-        Ok(self
-            .root
-            .join("state")
-            .join(kind)
-            .join(format!("{}--{}", safe_component(flake)?, safe_component(gen_id)?)))
+        Ok(self.root.join("state").join(kind).join(format!(
+            "{}--{}",
+            safe_component(flake)?,
+            safe_component(gen_id)?
+        )))
     }
 
     /// A gen whose manifest arrived via the authenticated push API.
@@ -165,7 +173,9 @@ impl Store {
     }
 
     pub fn is_local_origin(&self, flake: &str, gen_id: &str) -> bool {
-        self.marker("local-origin", flake, gen_id).map(|p| p.exists()).unwrap_or(false)
+        self.marker("local-origin", flake, gen_id)
+            .map(|p| p.exists())
+            .unwrap_or(false)
     }
 
     /// Confirmed fully present in the remote cache (manifest included).
@@ -175,7 +185,9 @@ impl Store {
     }
 
     pub fn is_mirrored(&self, flake: &str, gen_id: &str) -> bool {
-        self.marker("mirrored", flake, gen_id).map(|p| p.exists()).unwrap_or(false)
+        self.marker("mirrored", flake, gen_id)
+            .map(|p| p.exists())
+            .unwrap_or(false)
     }
 
     /// Delete a manifest and its markers (mirror-down reflecting a remote
@@ -228,10 +240,10 @@ impl Store {
         let mut out = Vec::new();
         for e in fs::read_dir(self.root.join("nar"))? {
             let e = e?;
-            if let Some(name) = e.file_name().to_str() {
-                if !name.starts_with('.') {
-                    out.push((name.to_string(), e.metadata()?.modified()?));
-                }
+            if let Some(name) = e.file_name().to_str()
+                && !name.starts_with('.')
+            {
+                out.push((name.to_string(), e.metadata()?.modified()?));
             }
         }
         Ok(out)
@@ -272,7 +284,10 @@ impl Store {
 }
 
 /// Write via temp file + rename so readers never see partial objects.
-fn write_atomic(path: &Path, fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> Result<()> {
+fn write_atomic(
+    path: &Path,
+    fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<()> {
     let dir = path.parent().context("no parent dir")?;
     let tmp = dir.join(format!(
         ".tmp-{}-{}",
@@ -314,7 +329,10 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         use std::time::{SystemTime, UNIX_EPOCH};
         format!(
             "{}-{:?}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             std::thread::current().id()
         )
         .replace(['(', ')', ' '], "")
@@ -334,8 +352,14 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         let s = Store::open(&root).unwrap();
         assert_eq!(s.len(), 1);
         assert!(s.has("v4f0jj9sz97ckskvacf40llz4nfr19jf"));
-        assert_eq!(s.read_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf").unwrap().unwrap(), REAL);
-        s.remove_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf").unwrap();
+        assert_eq!(
+            s.read_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf")
+                .unwrap()
+                .unwrap(),
+            REAL
+        );
+        s.remove_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf")
+            .unwrap();
         assert!(!s.has("v4f0jj9sz97ckskvacf40llz4nfr19jf"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -367,14 +391,16 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
                 "/nix/store/jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1".into(),
             ],
         };
-        s.put_manifest(&m, &serde_json::to_vec(&m).unwrap()).unwrap();
+        s.put_manifest(&m, &serde_json::to_vec(&m).unwrap())
+            .unwrap();
         assert_eq!(s.manifests().unwrap().len(), 1);
         assert_eq!(s.gaps(&m).len(), 2);
         let n = NarInfo::parse(REAL).unwrap();
         s.put_narinfo(&n, REAL.as_bytes()).unwrap();
-        assert_eq!(s.gaps(&m), vec![
-            "/nix/store/jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1".to_string()
-        ]);
+        assert_eq!(
+            s.gaps(&m),
+            vec!["/nix/store/jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1".to_string()]
+        );
 
         s.mark_local_origin("znix", "main-abc-x").unwrap();
         assert!(s.is_local_origin("znix", "main-abc-x"));

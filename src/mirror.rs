@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use crate::manifest::Manifest;
-use crate::narinfo::{store_hash_of, NarInfo, PubKey};
+use crate::narinfo::{NarInfo, PubKey, store_hash_of};
 use crate::remote::Remote;
 use crate::store::Store;
 
@@ -46,12 +46,16 @@ impl Mirror<'_> {
 
         // New manifests: fetch, keep only valid v3.
         for (key, _) in &listing {
-            let Some((flake, gen_id)) = parse_manifest_key(key) else { continue };
+            let Some((flake, gen_id)) = parse_manifest_key(key) else {
+                continue;
+            };
             let local = self.store.manifest_path(flake, gen_id)?;
             if local.exists() {
                 continue;
             }
-            let Some(bytes) = self.remote.get(key)? else { continue };
+            let Some(bytes) = self.remote.get(key)? else {
+                continue;
+            };
             match Manifest::parse(&bytes) {
                 Ok(m) => {
                     self.store.put_manifest(&m, &bytes)?;
@@ -101,7 +105,9 @@ impl Mirror<'_> {
         let hash = store_hash_of(store_path);
         let narinfo_key = format!("{hash}.narinfo");
         for source in self.sources() {
-            let Some(raw) = source.get(&narinfo_key)? else { continue };
+            let Some(raw) = source.get(&narinfo_key)? else {
+                continue;
+            };
             let text = match std::str::from_utf8(&raw) {
                 Ok(t) => t,
                 Err(_) => continue,
@@ -135,7 +141,10 @@ impl Mirror<'_> {
     fn sources(&self) -> Vec<Box<dyn ObjectSource + '_>> {
         let mut v: Vec<Box<dyn ObjectSource>> = vec![Box::new(RemoteSource(self.remote))];
         for up in &self.upstreams {
-            v.push(Box::new(HttpSource { base: up, agent: &self.agent }));
+            v.push(Box::new(HttpSource {
+                base: up,
+                agent: &self.agent,
+            }));
         }
         v
     }
@@ -328,7 +337,11 @@ References: \n"
         let missing = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-pkg-b";
         remote.insert(
             "roots/znix/main-1-x.json",
-            &manifest("main-1-x", "main", &[&format!("/nix/store/{ha}-pkg-a"), missing]),
+            &manifest(
+                "main-1-x",
+                "main",
+                &[&format!("/nix/store/{ha}-pkg-a"), missing],
+            ),
         );
 
         let m = mirror(&store, &remote, &keys);

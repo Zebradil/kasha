@@ -36,7 +36,9 @@ pub struct App {
 
 impl App {
     fn authorized(&self, req: &Request) -> bool {
-        let Some(token) = &self.token else { return false };
+        let Some(token) = &self.token else {
+            return false;
+        };
         let Some(h) = req
             .headers()
             .iter()
@@ -49,21 +51,18 @@ impl App {
             return t == token;
         }
         // netrc-driven `nix copy` sends Basic <base64(user:token)>.
-        if let Some(b64) = v.strip_prefix("Basic ") {
-            if let Ok(creds) = data_encoding::BASE64.decode(b64.trim().as_bytes()) {
-                if let Ok(s) = std::str::from_utf8(&creds) {
-                    return s.split_once(':').map(|(_, p)| p == token).unwrap_or(false);
-                }
-            }
+        if let Some(b64) = v.strip_prefix("Basic ")
+            && let Ok(creds) = data_encoding::BASE64.decode(b64.trim().as_bytes())
+            && let Ok(s) = std::str::from_utf8(&creds)
+        {
+            return s.split_once(':').map(|(_, p)| p == token).unwrap_or(false);
         }
         false
     }
 }
 
 pub fn serve(app: Arc<App>, listen: &str, threads: usize) -> Result<()> {
-    let server = Arc::new(
-        Server::http(listen).map_err(|e| anyhow::anyhow!("bind {listen}: {e}"))?,
-    );
+    let server = Arc::new(Server::http(listen).map_err(|e| anyhow::anyhow!("bind {listen}: {e}"))?);
     tracing::info!(listen, threads, objects = app.store.len(), "kasha serving");
     let mut handles = Vec::new();
     for _ in 0..threads {
@@ -129,8 +128,11 @@ fn respond_get(app: &App, req: Request, path: &str) {
         "nix-cache-info" => {
             return respond(
                 req,
-                text(200, "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 10\n"),
-            )
+                text(
+                    200,
+                    "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 10\n",
+                ),
+            );
         }
         "status" => {
             let st = app.status.lock().unwrap();
@@ -142,9 +144,8 @@ fn respond_get(app: &App, req: Request, path: &str) {
                     (f.clone(), serde_json::json!({"last_sync": t, "gaps": gaps}))
                 }).collect::<serde_json::Map<_, _>>(),
             });
-            let resp = Response::from_string(body.to_string()).with_header(
-                Header::from_bytes("Content-Type", "application/json").unwrap(),
-            );
+            let resp = Response::from_string(body.to_string())
+                .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
             return respond(req, resp);
         }
         _ => {}
@@ -207,7 +208,9 @@ fn ingest(app: &App, req: &mut Request, path: &str) -> Result<String> {
         let (flake, file) = rest
             .split_once('/')
             .context("manifest path must be roots/<flake>/<gen>.json")?;
-        let gen_id = file.strip_suffix(".json").context("manifest must be .json")?;
+        let gen_id = file
+            .strip_suffix(".json")
+            .context("manifest must be .json")?;
         let mut raw = Vec::new();
         req.as_reader().read_to_end(&mut raw)?;
         let m = Manifest::parse(&raw)?;
@@ -235,10 +238,9 @@ mod tests {
     fn spawn(app: Arc<App>) -> String {
         let server = Server::http("127.0.0.1:0").unwrap();
         let addr = server.server_addr().to_ip().unwrap();
-        std::thread::spawn(move || loop {
-            match server.recv() {
-                Ok(req) => handle(&app, req),
-                Err(_) => break,
+        std::thread::spawn(move || {
+            while let Ok(req) = server.recv() {
+                handle(&app, req)
             }
         });
         format!("http://{addr}")
@@ -285,7 +287,10 @@ References: \n";
             .unwrap();
         assert!(info.contains("StoreDir: /nix/store"));
         assert_eq!(
-            agent.get(format!("{base}/nope.narinfo")).call().unwrap_err_status(),
+            agent
+                .get(format!("{base}/nope.narinfo"))
+                .call()
+                .unwrap_err_status(),
             404
         );
 
@@ -365,7 +370,10 @@ References: \n";
 
         // Traversal refused.
         assert_eq!(
-            agent.get(format!("{base}/nar/..%2f..%2fetc")).call().unwrap_err_status(),
+            agent
+                .get(format!("{base}/nar/..%2f..%2fetc"))
+                .call()
+                .unwrap_err_status(),
             404
         );
 

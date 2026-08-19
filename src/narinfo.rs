@@ -5,7 +5,7 @@
 //! kasha needs (parse a few fields, verify the fingerprint signature) is small
 //! enough to own.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use data_encoding::BASE64;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
@@ -67,9 +67,7 @@ impl NarInfo {
                 "URL" => url = Some(v.to_string()),
                 "NarHash" => nar_hash = Some(v.to_string()),
                 "NarSize" => nar_size = Some(v.parse::<u64>().context("NarSize")?),
-                "References" => {
-                    references = v.split_whitespace().map(str::to_string).collect()
-                }
+                "References" => references = v.split_whitespace().map(str::to_string).collect(),
                 "Sig" => sigs.push(v.to_string()),
                 _ => {}
             }
@@ -179,13 +177,15 @@ Sig: cache.nixos.org-1:KEsNsSW3fMW5Izf4ZtjDbvSy/IO7al066kF52gutYtw/wJ8PopYTyu2aA
         let n = NarInfo::parse(REAL).unwrap();
         // Right name, wrong key material.
         let wrong = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
-        let bogus =
-            PubKey::parse(&format!("cache.nixos.org-1:{}", BASE64.encode(wrong.as_bytes())))
-                .unwrap();
+        let bogus = PubKey::parse(&format!(
+            "cache.nixos.org-1:{}",
+            BASE64.encode(wrong.as_bytes())
+        ))
+        .unwrap();
         assert!(!n.verify(&[bogus]));
         // Untrusted key name.
-        let other = PubKey::parse(&format!("other-1:{}", NIXOS_KEY.split(':').nth(1).unwrap()))
-            .unwrap();
+        let other =
+            PubKey::parse(&format!("other-1:{}", NIXOS_KEY.split(':').nth(1).unwrap())).unwrap();
         assert!(!n.verify(&[other]));
         // Tampered NarSize breaks the fingerprint.
         let tampered = REAL.replace("NarSize: 113096", "NarSize: 113097");
@@ -210,9 +210,11 @@ Sig: cache.nixos.org-1:KEsNsSW3fMW5Izf4ZtjDbvSy/IO7al066kF52gutYtw/wJ8PopYTyu2aA
     fn parse_rejects_garbage() {
         assert!(NarInfo::parse("not a narinfo").is_err());
         assert!(NarInfo::parse("URL: nar/x.nar\nNarHash: sha256:0\nNarSize: 1\n").is_err());
-        assert!(NarInfo::parse(
-            "StorePath: /etc/passwd\nURL: nar/x.nar\nNarHash: sha256:0\nNarSize: 1\n"
-        )
-        .is_err());
+        assert!(
+            NarInfo::parse(
+                "StorePath: /etc/passwd\nURL: nar/x.nar\nNarHash: sha256:0\nNarSize: 1\n"
+            )
+            .is_err()
+        );
     }
 }

@@ -19,14 +19,20 @@ pub struct Policy {
     pub other: GroupPolicy,
 }
 
-const WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
+pub const WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
 
 impl Policy {
     /// Remote sweep defaults: main N=5 M=4wk, non-main N=1 M=1wk.
     pub fn remote() -> Self {
         Policy {
-            main: GroupPolicy { keep_newest: 5, max_age: 4 * WEEK },
-            other: GroupPolicy { keep_newest: 1, max_age: WEEK },
+            main: GroupPolicy {
+                keep_newest: 5,
+                max_age: 4 * WEEK,
+            },
+            other: GroupPolicy {
+                keep_newest: 1,
+                max_age: WEEK,
+            },
         }
     }
 
@@ -34,8 +40,14 @@ impl Policy {
     /// Guarantees box retained ⊆ remote retained.
     pub fn boxed() -> Self {
         Policy {
-            main: GroupPolicy { keep_newest: 3, max_age: Duration::ZERO },
-            other: GroupPolicy { keep_newest: 1, max_age: Duration::ZERO },
+            main: GroupPolicy {
+                keep_newest: 3,
+                max_age: Duration::ZERO,
+            },
+            other: GroupPolicy {
+                keep_newest: 1,
+                max_age: Duration::ZERO,
+            },
         }
     }
 }
@@ -61,7 +73,11 @@ pub fn retain(gens: &[Gen], policy: &Policy, now: SystemTime) -> HashSet<String>
     }
     let mut keep = HashSet::new();
     for ((_, branch, _), mut group) in groups {
-        let p = if branch == "main" { policy.main } else { policy.other };
+        let p = if branch == "main" {
+            policy.main
+        } else {
+            policy.other
+        };
         group.sort_by(|a, b| b.time.cmp(&a.time));
         for (idx, g) in group.iter().enumerate() {
             let age = now.duration_since(g.time).unwrap_or(Duration::ZERO);
@@ -97,7 +113,10 @@ mod tests {
         let keep = retain(&gens, &Policy::remote(), now);
         assert_eq!(
             keep,
-            ["g0", "g1", "g2", "g3", "g4"].iter().map(|s| s.to_string()).collect()
+            ["g0", "g1", "g2", "g3", "g4"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         );
     }
 

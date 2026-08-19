@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use crate::manifest::Manifest;
 use crate::narinfo::store_hash_of;
 use crate::remote::Remote;
-use crate::retention::{retain, Gen, Policy};
+use crate::retention::{Gen, Policy, retain};
 use crate::store::Store;
 
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
@@ -156,10 +156,10 @@ pub fn remote_sweep(
         if !mark.contains(h) {
             continue;
         }
-        if let Some(raw) = remote.get(&format!("{h}.narinfo"))? {
-            if let Ok(info) = crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?) {
-                live_nars.insert(info.url);
-            }
+        if let Some(raw) = remote.get(&format!("{h}.narinfo"))?
+            && let Ok(info) = crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?)
+        {
+            live_nars.insert(info.url);
         }
     }
 
@@ -167,7 +167,7 @@ pub fn remote_sweep(
         retained_manifests: keep.len(),
         ..Default::default()
     };
-    let mut kill = |key: String, t: SystemTime, report: &mut SweepReport| -> Result<()> {
+    let kill = |key: String, t: SystemTime, report: &mut SweepReport| -> Result<()> {
         if now.duration_since(t).unwrap_or(Duration::ZERO) < grace {
             report.skipped_young += 1;
             return Ok(());
@@ -254,8 +254,7 @@ References: \n"
     }
 
     fn ts(now: SystemTime, days_ago: u64) -> String {
-        humantime::format_rfc3339_seconds(now - Duration::from_secs(days_ago * 86400))
-            .to_string()
+        humantime::format_rfc3339_seconds(now - Duration::from_secs(days_ago * 86400)).to_string()
     }
 
     #[test]
@@ -270,7 +269,12 @@ References: \n"
         remote.insert_at(&format!("nar/{ha}.nar.xz"), &na, old);
         remote.insert_at(
             "roots/znix/main-1-x.json",
-            &manifest_at("main-1-x", "main", &[format!("/nix/store/{ha}-pkg-a")], &ts(now, 100)),
+            &manifest_at(
+                "main-1-x",
+                "main",
+                &[format!("/nix/store/{ha}-pkg-a")],
+                &ts(now, 100),
+            ),
             old,
         );
         // Gen B: old feature gen, second-newest in its group of two -> swept.
@@ -279,7 +283,12 @@ References: \n"
         remote.insert_at(&format!("nar/{hb}.nar.xz"), &nb, old);
         remote.insert_at(
             "roots/znix/feat-1-x.json",
-            &manifest_at("feat-1-x", "feature", &[format!("/nix/store/{hb}-pkg-b")], &ts(now, 100)),
+            &manifest_at(
+                "feat-1-x",
+                "feature",
+                &[format!("/nix/store/{hb}-pkg-b")],
+                &ts(now, 100),
+            ),
             old,
         );
         let (hc, ic, nc) = object('c', "pkg-c");
@@ -287,7 +296,12 @@ References: \n"
         remote.insert_at(&format!("nar/{hc}.nar.xz"), &nc, old);
         remote.insert_at(
             "roots/znix/feat-2-x.json",
-            &manifest_at("feat-2-x", "feature", &[format!("/nix/store/{hc}-pkg-c")], &ts(now, 50)),
+            &manifest_at(
+                "feat-2-x",
+                "feature",
+                &[format!("/nix/store/{hc}-pkg-c")],
+                &ts(now, 50),
+            ),
             old,
         );
         // v2 manifest: ordinary garbage.
@@ -302,8 +316,7 @@ References: \n"
         // Foreign key: untouched.
         remote.insert_at("nix-cache-info", b"StoreDir: /nix/store\n", old);
 
-        let report =
-            remote_sweep(&remote, &Policy::remote(), now, GRACE, false).unwrap();
+        let report = remote_sweep(&remote, &Policy::remote(), now, GRACE, false).unwrap();
         assert_eq!(report.retained_manifests, 2); // main-1 + feat-2 (newest per group)
         let mut deleted = report.deleted.clone();
         deleted.sort();
@@ -344,7 +357,10 @@ References: \n"
         let now = SystemTime::now();
         let dir = std::env::temp_dir().join(format!(
             "kasha-gc-{}",
-            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir).unwrap();
@@ -380,7 +396,9 @@ References: \n"
             &[format!("/nix/store/{he}-pkg-e")],
             &ts(now, 300),
         );
-        store.put_manifest(&Manifest::parse(&mb).unwrap(), &mb).unwrap();
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
         store.mark_local_origin("znix", "local-1-x").unwrap();
 
         // Grace covers everything -> nothing deleted yet.

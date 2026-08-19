@@ -1,7 +1,7 @@
 //! Manifest v3: one generation = full build-closure store-path list plus
 //! explicit grouping fields. Replaces roots-only v2 (`{outPath, drvPath}`).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 

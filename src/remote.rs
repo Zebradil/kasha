@@ -2,7 +2,7 @@
 //! through; `S3Remote` is the real implementation (R2 or any S3 endpoint),
 //! speaking presigned requests via ureq — no AWS SDK.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use std::time::{Duration, SystemTime};
 
@@ -94,11 +94,11 @@ impl Remote for S3Remote {
                 .context("list")?
                 .body_mut()
                 .read_to_string()?;
-            let parsed = rusty_s3::actions::ListObjectsV2::parse_response(&text)
-                .context("list XML")?;
+            let parsed =
+                rusty_s3::actions::ListObjectsV2::parse_response(&text).context("list XML")?;
             for c in parsed.contents {
-                let t = humantime::parse_rfc3339(&c.last_modified)
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let t =
+                    humantime::parse_rfc3339(&c.last_modified).unwrap_or(SystemTime::UNIX_EPOCH);
                 out.push((c.key, t));
             }
             token = parsed.next_continuation_token;
@@ -121,7 +121,10 @@ impl Remote for S3Remote {
     }
 
     fn get_stream(&self, key: &str) -> Result<Option<Box<dyn std::io::Read + '_>>> {
-        let url = self.bucket.get_object(Some(&self.creds), key).sign(SIGN_TTL);
+        let url = self
+            .bucket
+            .get_object(Some(&self.creds), key)
+            .sign(SIGN_TTL);
         match self.agent.get(url.as_str()).call() {
             Ok(resp) => Ok(Some(Box::new(resp.into_body().into_reader()))),
             Err(e) if status_of(&e) == Some(404) => Ok(None),
@@ -130,7 +133,10 @@ impl Remote for S3Remote {
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
-        let url = self.bucket.head_object(Some(&self.creds), key).sign(SIGN_TTL);
+        let url = self
+            .bucket
+            .head_object(Some(&self.creds), key)
+            .sign(SIGN_TTL);
         match self.agent.head(url.as_str()).call() {
             Ok(_) => Ok(true),
             Err(e) if matches!(status_of(&e), Some(404) | Some(403)) => Ok(false),
@@ -139,7 +145,10 @@ impl Remote for S3Remote {
     }
 
     fn put(&self, key: &str, body: &[u8]) -> Result<()> {
-        let url = self.bucket.put_object(Some(&self.creds), key).sign(SIGN_TTL);
+        let url = self
+            .bucket
+            .put_object(Some(&self.creds), key)
+            .sign(SIGN_TTL);
         self.agent
             .put(url.as_str())
             .send(body)
@@ -199,7 +208,12 @@ pub mod fake {
                 .collect())
         }
         fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-            Ok(self.objects.lock().unwrap().get(key).map(|(b, _)| b.clone()))
+            Ok(self
+                .objects
+                .lock()
+                .unwrap()
+                .get(key)
+                .map(|(b, _)| b.clone()))
         }
         fn get_stream(&self, key: &str) -> Result<Option<Box<dyn std::io::Read + '_>>> {
             Ok(self

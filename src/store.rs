@@ -204,6 +204,47 @@ impl Store {
         Ok(())
     }
 
+    /// Indexed nar URL for a store hash.
+    pub fn url_of(&self, store_hash: &str) -> Option<String> {
+        self.index.read().unwrap().get(store_hash).cloned()
+    }
+
+    /// All narinfo hashes on disk with mtimes (sweep input).
+    pub fn narinfo_files(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+        let mut out = Vec::new();
+        for e in fs::read_dir(&self.root)? {
+            let e = e?;
+            let name = e.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some(hash) = name.strip_suffix(".narinfo") {
+                out.push((hash.to_string(), e.metadata()?.modified()?));
+            }
+        }
+        Ok(out)
+    }
+
+    /// All nar object file names with mtimes (sweep input).
+    pub fn nar_files(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+        let mut out = Vec::new();
+        for e in fs::read_dir(self.root.join("nar"))? {
+            let e = e?;
+            if let Some(name) = e.file_name().to_str() {
+                if !name.starts_with('.') {
+                    out.push((name.to_string(), e.metadata()?.modified()?));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn remove_nar(&self, file: &str) -> Result<()> {
+        let p = self.nar_path(file)?;
+        if p.exists() {
+            fs::remove_file(p)?;
+        }
+        Ok(())
+    }
+
     /// Read a narinfo's raw text by store hash, if present.
     pub fn read_narinfo(&self, store_hash: &str) -> Result<Option<String>> {
         let p = self.narinfo_path(store_hash)?;

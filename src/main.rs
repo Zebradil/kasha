@@ -1,3 +1,4 @@
+mod gc;
 mod manifest;
 mod narinfo;
 mod mirror;

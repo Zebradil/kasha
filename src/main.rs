@@ -1,6 +1,7 @@
 mod manifest;
 mod narinfo;
 mod retention;
+mod server;
 mod store;
 
 fn main() {

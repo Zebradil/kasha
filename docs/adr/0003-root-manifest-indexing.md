@@ -1,5 +1,9 @@
 # Discovery and future GC both key off root manifests, not a full object index
 
+**Superseded by [ADR-0008](0008-single-rust-binary.md)** — manifests (v3) now carry
+the full build-closure path list, not roots only. Discovery still keys off the
+`roots/` prefix.
+
 Nix has no cheap way to list "all paths in this cache," and the box needs to know
 which new generations to eagerly pull, so every writer (CI, local push) publishes a
 small root manifest (`roots/<flake>/<gen>.json`, `version: 2`) listing just that

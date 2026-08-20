@@ -1,5 +1,8 @@
 # Reusable tools are bash (latest), not a compiled/scripting language
 
+**Superseded by [ADR-0008](0008-single-rust-binary.md)** — the tripwire below fired;
+everything is now one Rust binary.
+
 The three reusable tools — root-manifest emission, push-target selection, and the
 mirror-diff engine — are written in **bash** (latest, `#!/usr/bin/env bash` with
 `set -euo pipefail`, `shellcheck` in bash mode), not Go/Rust/Python. This matches the

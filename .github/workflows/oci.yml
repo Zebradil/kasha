@@ -29,7 +29,19 @@ jobs:
         run: ./result | docker load
 
       - name: Smoke image
-        run: bash scripts/oci-smoke.sh ghcr.io/zebradil/kasha-box:dev
+        run: |
+          set -euo pipefail
+          img=ghcr.io/zebradil/kasha-box:dev
+          docker run --rm "$img" --help
+          docker run -d --name kasha -p 5000:5000 \
+            -e KASHA_TRUSTED_KEYS=cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= \
+            "$img"
+          for _ in $(seq 20); do
+            curl -sf http://localhost:5000/nix-cache-info && break
+            sleep 1
+          done
+          curl -sf http://localhost:5000/nix-cache-info | grep -q 'StoreDir: /nix/store'
+          docker rm -f kasha
 
       - name: Compute tags
         id: tags

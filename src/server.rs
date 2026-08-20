@@ -109,7 +109,12 @@ pub fn handle(app: &App, mut req: Request) {
         Method::Put => {
             if !app.authorized(&req) {
                 tracing::warn!(path, "unauthorized write");
-                return respond(req, text(401, "unauthorized"));
+                // Challenge lets libcurl (nix copy + netrc) retry with Basic
+                // when it did not send credentials preemptively.
+                let resp = text(401, "unauthorized").with_header(
+                    Header::from_bytes("WWW-Authenticate", "Basic realm=\"kasha\"").unwrap(),
+                );
+                return respond(req, resp);
             }
             match ingest(app, &mut req, path) {
                 Ok(msg) => respond(req, text(201, &msg)),

@@ -1,5 +1,5 @@
 {
-  description = "kasha — net-local Nix binary cache (box read path)";
+  description = "kasha — net-local Nix binary cache";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
@@ -22,122 +22,77 @@
             pkgs = nixpkgs.legacyPackages.${system};
           }
         );
+      mkKasha =
+        rustPlatform:
+        rustPlatform.buildRustPackage {
+          pname = "kasha";
+          version = (lib.importTOML ./Cargo.toml).package.version;
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./src
+            ];
+          };
+          cargoLock.lockFile = ./Cargo.lock;
+        };
     in
     {
       nixosModules = {
-        box = import ./modules/box.nix;
         consumer = import ./modules/consumer.nix;
-        default = self.nixosModules.box;
+        default = self.nixosModules.consumer;
       };
 
+      packages = forAllSystems (
+        { system, pkgs }:
+        {
+          kasha = mkKasha pkgs.rustPlatform;
+          default = self.packages.${system}.kasha;
+        }
+        // lib.optionalAttrs (lib.hasSuffix "linux" system) rec {
+          # Static musl build: the only thing the OCI image ships.
+          kasha-static = mkKasha pkgs.pkgsStatic.rustPlatform;
+          oci-image = pkgs.dockerTools.streamLayeredImage {
+            name = "ghcr.io/zebradil/kasha-box";
+            tag = "dev";
+            contents = [
+              kasha-static
+              pkgs.cacert
+            ];
+            config = {
+              Entrypoint = [ "/bin/kasha" ];
+              Cmd = [ "serve" ];
+              ExposedPorts."5000/tcp" = { };
+              Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
+              Volumes."/kasha" = { };
+            };
+          };
+        }
+      );
+
       devShells = forAllSystems (
-        { pkgs, ... }: {
+        { pkgs, ... }:
+        {
           default = pkgs.mkShellNoCC {
             packages = [
-              pkgs.shellcheck
-              pkgs.shfmt
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.clippy
+              pkgs.rustfmt
+              pkgs.rust-analyzer
               pkgs.actionlint
-              pkgs.jq
-              pkgs.awscli2
               pkgs.nixpkgs-fmt
             ];
           };
         }
       );
 
-      packages = forAllSystems (
-        { system, pkgs }:
-        lib.optionalAttrs (lib.hasSuffix "linux" system) (
-          let
-            mkScript =
-              name: file: runtimeInputs:
-              pkgs.writeShellApplication {
-                inherit name runtimeInputs;
-                text = builtins.readFile file;
-              };
-            checkStoreFs = mkScript "kasha-check-store-fs" ./scripts/check-store-fs.sh [ pkgs.coreutils ];
-            mirrorDown = mkScript "kasha-mirror-down" ./scripts/mirror-down.sh [
-              pkgs.awscli2
-              pkgs.coreutils
-              pkgs.gawk
-              pkgs.gnugrep
-              pkgs.gnused
-              pkgs.jq
-              pkgs.nix
-              pkgs.util-linux
-            ];
-            mirrorUp = mkScript "kasha-mirror-up" ./scripts/mirror-up.sh [
-              pkgs.awscli2
-              pkgs.coreutils
-              pkgs.gnused
-              pkgs.jq
-              pkgs.nix
-              pkgs.util-linux
-            ];
-            ociEntrypoint = pkgs.writeShellApplication {
-              name = "oci-entrypoint";
-              runtimeInputs = [
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.curl
-                pkgs.gnused
-                pkgs.harmonia
-                pkgs.nix
-                pkgs.openssh
-                pkgs.shadow
-                pkgs.util-linux
-                checkStoreFs
-                mirrorDown
-                mirrorUp
-              ];
-              text = builtins.readFile ./scripts/oci-entrypoint.sh;
-            };
-          in
-          {
-            oci-image = pkgs.dockerTools.streamLayeredImage {
-              name = "ghcr.io/zebradil/kasha-box";
-              tag = "dev";
-              contents = [
-                pkgs.bashInteractive
-                pkgs.cacert
-                pkgs.coreutils
-                pkgs.curl
-                pkgs.gnused
-                pkgs.harmonia
-                pkgs.nix
-                pkgs.openssh
-                pkgs.shadow
-                ociEntrypoint
-                checkStoreFs
-                mirrorDown
-                mirrorUp
-              ];
-              config = {
-                Entrypoint = [ "${ociEntrypoint}/bin/oci-entrypoint" ];
-                ExposedPorts = {
-                  "5000/tcp" = { };
-                  "22/tcp" = { };
-                };
-                Env = [
-                  "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-                  "NIX_CONFIG=experimental-features = nix-command flakes"
-                ];
-                Volumes = {
-                  "/kasha" = { };
-                };
-              };
-            };
-          }
-        )
-      );
-
       checks = forAllSystems (
         { system, pkgs }:
         {
-          shellcheck = pkgs.runCommand "shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; } ''
-            shellcheck ${./scripts}/*.sh ${./tests}/run.sh
-            touch $out
-          '';
+          # cargo test runs in the package's checkPhase.
+          build = self.packages.${system}.kasha;
 
           actionlint =
             pkgs.runCommand "actionlint"
@@ -151,59 +106,13 @@
                 actionlint -color ${./.github/workflows}/*.yml
                 touch $out
               '';
-
-          # The env-in -> stdout-out fixture pattern every reusable tool uses.
-          fixtures =
-            pkgs.runCommand "fixture-tests"
-              {
-                nativeBuildInputs = [
-                  pkgs.bash
-                  pkgs.coreutils
-                  pkgs.jq
-                ];
-              }
-              ''
-                # Copy writable so patchShebangs can fix fixture fakes' `/usr/bin/env`
-                # shebang — it doesn't exist in the sandbox, and fakes are exec'd via PATH.
-                mkdir src
-                cp -r ${self}/tests ${self}/scripts src/
-                chmod -R u+w src
-                cd src
-                patchShebangs tests/fixtures
-                bash tests/run.sh
-                touch $out
-              '';
         }
-        # Seed -> serve -> substitute -> verify round-trip. NixOS VM, Linux only.
+        # Real nix client against the server: signed push (nix copy --to),
+        # manifest emit, substitute pull with sig gate. NixOS VM, Linux only.
         // lib.optionalAttrs (lib.hasSuffix "linux" system) {
-          smoke = import ./tests/smoke.nix {
+          integration = import ./tests/v2.nix {
             inherit pkgs;
-            boxModule = self.nixosModules.box;
-          };
-
-          # Reverse flow: ssh-ng push -> serve immediately (issue #4).
-          push = import ./tests/push.nix {
-            inherit pkgs;
-            boxModule = self.nixosModules.box;
-          };
-
-          # Selection: on-LAN read from box, off-LAN fall back to remote (issue #5).
-          selection = import ./tests/selection.nix {
-            inherit pkgs;
-            boxModule = self.nixosModules.box;
-            consumerModule = self.nixosModules.consumer;
-          };
-
-          # Down replica: discover remote roots, pull closures into box (issue #6).
-          mirror-down = import ./tests/mirror-down.nix {
-            inherit pkgs;
-            boxModule = self.nixosModules.box;
-          };
-
-          # Up replica: discover box-local roots, push closures to remote (issue #8).
-          mirror-up = import ./tests/mirror-up.nix {
-            inherit pkgs;
-            boxModule = self.nixosModules.box;
+            kasha = self.packages.${system}.kasha;
           };
         }
       );

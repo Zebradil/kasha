@@ -1,0 +1,33 @@
+name: gc
+
+# Remote cache sweep: delete-capable credentials live here, never on the box.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report what would be deleted, delete nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix build .#kasha
+      - name: Remote sweep
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.KASHA_GC_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.KASHA_GC_SECRET_ACCESS_KEY }}
+          KASHA_REMOTE: ${{ vars.KASHA_REMOTE }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          ./result/bin/kasha gc "${args[@]}"

@@ -1,2 +1,0 @@
-KASHA_REMOTE_TARGET=s3://remote-cache?endpoint=r2.example&region=auto
-KASHA_PRINT_TARGET=1

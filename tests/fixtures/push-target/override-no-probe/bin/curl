@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-printf '%s\n' "curl must not run when --to is set"
-exit 99

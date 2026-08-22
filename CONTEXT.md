@@ -17,7 +17,8 @@ _Avoid_: R2, the bucket, origin
 
 **Box**:
 A net-local binary cache instance reachable only from one physical network (e.g. home
-LAN). Holds a full nix store, serves reads, and accepts pushes at LAN speed.
+LAN). Holds a flat binary-cache store (same layout as the remote bucket, no nix
+installed), serves reads, and accepts authenticated HTTP pushes at LAN speed.
 _Avoid_: local cache, edge cache, proxy
 
 **Box image**:
@@ -32,13 +33,13 @@ cache in the background (before anything asks for them) and mirrors locally-push
 generations *up* to the remote cache. Neither direction waits on a client request.
 _Avoid_: pull-through cache, mirror (ambiguous about direction)
 
-**Root manifest**:
-A small object (`roots/<flake>/<gen>.json`) published by a writer (CI or a local
-push) alongside a generation's NARs. Lists that generation's top-level output paths
-only — not their closures. Readers discover new generations by listing the `roots/`
-prefix; syncers expand a root into its full closure via `nix copy`'s own
-closure-awareness.
-_Avoid_: index, manifest (without "root")
+**Generation manifest (v3)**:
+An object (`roots/<flake>/<gen>.json`) published by a writer (CI or a local push)
+alongside a generation's NARs. Lists the generation's full build-closure store
+paths plus explicit `branch` and `attr` fields. Readers discover new generations
+by listing the `roots/` prefix; mirroring is a dumb fetch of the listed paths —
+no closure expansion on the box.
+_Avoid_: root manifest (v2, roots-only — dead), index
 
 **Generation**:
 One published set of build outputs for one flake, identified by a gen-id and
@@ -65,9 +66,11 @@ _Avoid_: latest
 **Reverse flow**:
 A local build pushed up (box or remote cache) instead of the usual CI-builds /
 user-pulls direction. Optional; exists to let CI skip work others already built.
-The push entrypoint probes the box's HTTP cache with a `.narinfo` HEAD and targets
-the box's `ssh-ng://` endpoint when reachable, otherwise the remote cache; `--to`
-forces a target for manual runs and performance tests.
+Push is plain `nix copy --to http://box` with netrc/bearer auth; the matching
+manifest goes through the same authed PUT API.
 
-Box-local root manifests live under `/var/lib/kasha/roots/<flake>/<gen>.json` and
-are the up-mirror's source of truth for locally-pushed generations.
+**Local-origin generation**:
+A generation whose manifest arrived via the authenticated push API, tracked in
+state files beside the store. Mirror-up copies everything the remote lacks from
+local-origin generations; a local-origin generation is never GC-eligible until
+its manifest is confirmed present in the remote cache.

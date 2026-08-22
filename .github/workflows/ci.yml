@@ -11,6 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
-      # Runs shellcheck, actionlint, the fixture tests, and the box
-      # seed->serve->substitute->verify smoke test (NixOS VM).
+      # Runs cargo tests (package checkPhase), actionlint, and the
+      # push -> serve -> substitute integration test (NixOS VM).
       - run: nix flake check -L

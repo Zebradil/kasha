@@ -1,5 +1,8 @@
 # Box is a nix-native store, not attic or a raw-object mirror
 
+**Superseded by [ADR-0008](0008-single-rust-binary.md)** — the box is now a flat
+binary-cache store served by a single Rust binary.
+
 The box needs to serve, accept pushes, and sync bidirectionally with the remote cache.
 We chose a real nix store (`harmonia` + `sshd`/nix-daemon, synced via `nix copy`) over:
 

@@ -1,10 +1,11 @@
 # Handoff: kasha v2 rewrite — single Rust binary
 
-Design agreed in a grilling session (2026-08-20). Not yet built. This doc is the spec to implement.
+Design agreed in a grilling session (2026-08-20); implemented in `f4a50b2`.
+Built; see ADR-0008 and ADR-0009 for the decisions it produced.
 It supersedes the bash/harmonia POC architecture (ADR-0002 nix-native store, ADR-0003 roots-only
-manifests, ADR-0006 bash tools) and absorbs `docs/agents/handoff-gc.md` (GC policy carried over,
+manifests, ADR-0006 bash tools) and absorbs the GC handoff (policy carried over,
 mark step simplified). ADR-0001 (eager bidirectional replica) and ADR-0004 (box holds no signing
-key) survive unchanged. Write fresh ADRs for the superseding decisions once built.
+key) survive unchanged.
 
 ## Why rewrite (evidence, don't re-litigate)
 
@@ -42,7 +43,7 @@ key) survive unchanged. Write fresh ADRs for the superseding decisions once buil
    behavior). Local-origin generations are those whose manifest arrived via the authenticated
    push API, tracked in state files beside the store. Guard: a locally-pushed gen is never
    GC-eligible until its manifest is confirmed present in R2.
-7. **GC policy carried over verbatim from `handoff-gc.md`**: retain if `age < M` OR `< N` newer
+7. **GC policy carried over verbatim (ADR-0008)**: retain if `age < M` OR `< N` newer
    gens in the `(branch, attr)` group; defaults main `N=5, M=4wk`, non-main `N=1, M=1wk`; box
    marks newest `3` (main) / `1` (non-main) and deletes no manifests; 24h grace window skips
    young objects; manifest-published-last ordering. **Simplified mark step**: mark set = union of
@@ -74,7 +75,7 @@ key) survive unchanged. Write fresh ADRs for the superseding decisions once buil
   ever adopted, the CLI push must sign only paths lacking a trusted sig, not the whole closure.
 - Pull-through serving on miss.
 - Prometheus /metrics.
-- Selection shim / discovery backends (`docs/cache-roadmap.md`).
+- Selection shim / discovery backends (`todo.md`).
 
 ## Suggested build order
 

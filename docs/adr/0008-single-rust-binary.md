@@ -24,7 +24,16 @@ mirror workers, GC, and the CLI (`emit`, `gc`). What changed and why:
   token); sshd/ssh-ng removed. Every ingested narinfo signature (push and mirror) is
   verified against trusted public keys.
 - **GC**: retention-driven box sweep in-process on a timer; remote sweep runs in CI
-  (`kasha gc`) with delete-capable credentials the box never holds.
+  (`kasha gc`) with delete-capable credentials the box never holds. Retention source of
+  truth is manifest presence — pruning `roots/<flake>/<gen>.json` *is* the retention
+  decision, no separate ledger — and the grouping key is the manifest's explicit
+  `(branch, attr)` fields, never a parse of the opaque gen-id. Only the remote sweep
+  deletes manifests; the box marks a strict subset, so box-retained ⊆ remote-retained by
+  construction. R2 pricing shaped this: DELETE is free, LIST is $4.50/M batched 1000/page,
+  GET/HEAD $0.36/M, no egress, storage $0.015/GB-mo — API ops are negligible at any
+  realistic scale and storage-GB is the only real cost, so the sweep is simple and
+  infrequent rather than clever (no lock, no tombstone, just a 24h grace window on top of
+  manifest-published-last ordering).
 - **Bash tools and the box NixOS module are gone**; the OCI image with the static
   binary is the only box artifact (ADR-0007's generic env-configured image contract
   stands). The consumer NixOS module stays.

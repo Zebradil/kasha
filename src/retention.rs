@@ -1,6 +1,6 @@
 //! Retention selector shared by box GC and remote sweep.
 //!
-//! Policy (handoff-gc, carried over): retain a generation if it has fewer
+//! Policy (ADR-0008): retain a generation if it has fewer
 //! than N newer generations in its (flake, branch, attr) group, OR it is
 //! younger than M. Box marking uses counts only (M = zero).
 

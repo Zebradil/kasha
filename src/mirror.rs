@@ -61,7 +61,7 @@ impl Mirror<'_> {
                     self.store.put_manifest(&m, &bytes)?;
                     tracing::info!(flake, gen = gen_id, "new remote generation");
                 }
-                Err(e) => tracing::debug!(key, error = %e, "ignoring non-v3 manifest"),
+                Err(e) => tracing::warn!(key, error = %e, "ignoring non-v3 manifest"),
             }
         }
 

@@ -20,7 +20,13 @@ jobs:
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
-          extra_nix_config: experimental-features = nix-command flakes
+          # Read side of kasha's own cache. The image's one expensive input is
+          # kasha-static, the same derivation as checks.build, so a commit that
+          # leaves src alone substitutes it instead of rebuilding.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = ${{ vars.KASHA_CACHE_URL }}
+            extra-trusted-public-keys = ${{ vars.KASHA_CI_PUBLIC_KEY }}
 
       - name: Build image
         run: nix build .#packages.x86_64-linux.oci-image

@@ -364,14 +364,11 @@ Retention can be widened or narrowed for a what-if run without touching the defa
 
 ### 6b. Fix and dispatch the scheduled sweep
 
-`.github/workflows/gc.yml` runs nightly at 04:00 UTC and **has been failing on every run**:
-
-```
-Error: remote must be s3://…, got
-```
-
-The repo has no `KASHA_GC_ACCESS_KEY_ID` / `KASHA_GC_SECRET_ACCESS_KEY` secrets and no
-`KASHA_REMOTE` variable, so no remote sweep has ever run and R2 grows without bound.
+`.github/workflows/gc.yml` runs nightly at 04:00 UTC, executing
+`ghcr.io/zebradil/kasha-box:edge` rather than building kasha from source. It needs
+`KASHA_GC_ACCESS_KEY_ID` / `KASHA_GC_SECRET_ACCESS_KEY` secrets and the `KASHA_REMOTE`
+secret; without them the run fails with `Error: remote must be s3://…, got` and R2 grows
+without bound.
 
 The workflow deliberately wants credentials the box never holds: **delete-capable**. Mint a
 separate R2 API token in the Cloudflare dashboard with object read/write **and delete** on the
@@ -379,7 +376,7 @@ separate R2 API token in the Cloudflare dashboard with object read/write **and d
 
 ```sh
 cd "$KASHA_REPO"
-gh variable set KASHA_REMOTE --body "$(sops decrypt --extract '["cache-s3-url"]' "$ZNIX_REPO/secrets/cache.yaml")"
+gh secret set KASHA_REMOTE --body "$(sops decrypt --extract '["cache-s3-url"]' "$ZNIX_REPO/secrets/cache.yaml")"
 gh secret set KASHA_GC_ACCESS_KEY_ID       # paste the new token's access key id
 gh secret set KASHA_GC_SECRET_ACCESS_KEY   # paste the new token's secret
 gh variable list && gh secret list

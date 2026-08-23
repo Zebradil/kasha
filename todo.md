@@ -10,16 +10,17 @@ none of it gets built on speculation.
 
 ## Open bugs / operational gaps
 
-### Remote GC has never run successfully
+### Remote sweep is slow and was unobservable
 
-`.github/workflows/gc.yml` fails on every scheduled run: `Error: remote must be s3://…, got`.
-The repo has no `KASHA_GC_ACCESS_KEY_ID` / `KASHA_GC_SECRET_ACCESS_KEY` secrets and no
-`KASHA_REMOTE` variable. Until those are set, the remote cache is never swept and R2 storage
-grows without bound.
+The first successful scheduled run took over 30 minutes with no output at all.
+`remote_sweep` is one HTTP round trip per object across three phases (manifest
+reads, retained-narinfo reads, deletes), and logged nothing until it finished.
+Progress is now reported every 100 objects, so the next run says whether it is
+slow or wedged, and where.
 
-Needs: R2 credentials with delete permission (separate from the box's read/write pair) as repo
-secrets, plus `KASHA_REMOTE` as a repo variable. Verify with a `workflow_dispatch` run at
-`dry-run: true` before letting the schedule delete anything.
+If the answer is "thousands of sequential GETs", the fix is concurrency in
+`src/gc.rs` — but measure first: a bucket that has never been swept is large
+once and small thereafter, and the problem may not survive its own first run.
 
 ### Dangling-narinfo warning (unresolved, cheap first step unrun)
 

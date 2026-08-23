@@ -109,9 +109,16 @@
 
       checks = forAllSystems (
         { system, pkgs }:
+        let
+          # Linux checks run against the musl static build, because that is the
+          # binary the OCI image ships — musl's stub resolver and lack of NSS
+          # are exactly the differences a glibc build would hide. Darwin has no
+          # static build and tests the native one, which is the producer path.
+          tested = self.packages.${system}.kasha-static or self.packages.${system}.kasha;
+        in
         {
           # cargo test runs in the package's checkPhase.
-          build = self.packages.${system}.kasha;
+          build = tested;
 
           # writeShellApplication shellchecks the script in its build.
           kasha-cache-push = self.packages.${system}.kasha-cache-push;
@@ -134,7 +141,7 @@
         // lib.optionalAttrs (lib.hasSuffix "linux" system) {
           integration = import ./tests/v2.nix {
             inherit pkgs;
-            kasha = self.packages.${system}.kasha;
+            kasha = tested;
           };
         }
       );

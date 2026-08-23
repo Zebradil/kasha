@@ -5,12 +5,63 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          # kasha's own remote cache, read side. Plain public S3 reads, so this
+          # works for fork pull requests too — `vars` are exposed to them,
+          # unlike `secrets`.
+          extra-conf: |
+            extra-substituters = ${{ vars.KASHA_CACHE_URL }}
+            extra-trusted-public-keys = ${{ vars.KASHA_CI_PUBLIC_KEY }}
+
       # Runs cargo tests (package checkPhase), actionlint, and the
       # push -> serve -> substitute integration test (NixOS VM).
       - run: nix flake check -L
+
+      # Push only from main: the write credentials and the signing key stay off
+      # branch builds, and main already primes the cache for the next PR.
+      # A broken cache must slow CI down, never fail it.
+      - name: Publish check outputs
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          CACHE_S3_URL: ${{ secrets.KASHA_REMOTE }}
+          KASHA_CI_SIGNING_KEY: ${{ secrets.KASHA_CI_SIGNING_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
+          KASHA_FLAKE: kasha
+          KASHA_BRANCH: ${{ github.ref_name }}
+          KASHA_ATTR: checks
+        run: |
+          set -euo pipefail
+          system=x86_64-linux
+
+          # Output closures only. The script's attr mode would push each check's
+          # *build* closure — every nixpkgs input, tens of GB that cache.nixos.org
+          # already serves. What CI needs back is the outputs themselves.
+          attrs=()
+          while IFS= read -r a; do
+            [ -n "$a" ] && attrs+=(".#checks.${system}.${a}")
+          done < <(
+            nix eval --raw ".#checks.${system}" \
+              --apply 'cs: builtins.concatStringsSep "\n" (builtins.attrNames cs)'
+          )
+          nix build --no-link --print-out-paths "${attrs[@]}" \
+            | xargs nix-store --query --requisites \
+            | sort -u > "$RUNNER_TEMP/paths.txt"
+
+          umask 077
+          printf '%s' "$KASHA_CI_SIGNING_KEY" > "$RUNNER_TEMP/kasha-ci.key"
+
+          CACHE_SIGNING_KEY_FILE="$RUNNER_TEMP/kasha-ci.key" \
+          KASHA_BIN="$(nix build --no-link --print-out-paths ".#checks.${system}.build")/bin/kasha" \
+          KASHA_GEN="${GITHUB_REF_NAME}-${GITHUB_SHA::12}" \
+            nix run .#kasha-cache-push -- --paths-file "$RUNNER_TEMP/paths.txt"

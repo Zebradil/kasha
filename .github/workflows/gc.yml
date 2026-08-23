@@ -1,6 +1,10 @@
 name: gc
 
 # Remote cache sweep: delete-capable credentials live here, never on the box.
+#
+# Runs the published image rather than building from source: the sweep is the
+# same binary the box runs, and `edge` is whatever the oci workflow last pushed
+# from main. A gc fix therefore reaches this schedule only after oci publishes.
 on:
   schedule:
     - cron: '0 4 * * *'
@@ -11,16 +15,12 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   sweep:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - run: nix build .#kasha
       - name: Remote sweep
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.KASHA_GC_ACCESS_KEY_ID }}
@@ -30,4 +30,8 @@ jobs:
         run: |
           args=()
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
-          ./result/bin/kasha gc "${args[@]}"
+          docker run --rm \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e KASHA_REMOTE \
+            ghcr.io/zebradil/kasha-box:edge gc "${args[@]}"

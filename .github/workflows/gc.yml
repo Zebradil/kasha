@@ -25,7 +25,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.KASHA_GC_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.KASHA_GC_SECRET_ACCESS_KEY }}
-          KASHA_REMOTE: ${{ vars.KASHA_REMOTE }}
+          KASHA_REMOTE: ${{ secrets.KASHA_REMOTE }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
           args=()

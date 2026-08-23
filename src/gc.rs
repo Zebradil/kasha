@@ -19,6 +19,11 @@ use crate::store::Store;
 
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
 
+/// Every phase of a remote sweep is one HTTP round trip per object, so a large
+/// bucket can run for many minutes. Report progress this often to keep a slow
+/// sweep distinguishable from a wedged one.
+const PROGRESS_EVERY: usize = 100;
+
 #[derive(Debug, Default)]
 pub struct SweepReport {
     pub retained_manifests: usize,
@@ -134,12 +139,22 @@ pub fn remote_sweep(
         }
         // Anything else (nix-cache-info, logs) is not ours to delete.
     }
+    tracing::info!(
+        objects = listing.len(),
+        narinfos = narinfos.len(),
+        nars = nars.len(),
+        roots = roots.len(),
+        "remote sweep: bucket listed"
+    );
 
     // Retention over parseable v3 manifests; the rest of roots/ is garbage.
     let mut gens = Vec::new();
     let mut manifests = Vec::new();
     let mut garbage_roots: Vec<(&str, SystemTime)> = Vec::new();
-    for (key, t) in &roots {
+    for (i, (key, t)) in roots.iter().enumerate() {
+        if i > 0 && i % PROGRESS_EVERY == 0 {
+            tracing::info!(read = i, total = roots.len(), "remote sweep: reading manifests");
+        }
         match remote.get(key)?.as_deref().map(Manifest::parse) {
             Some(Ok(m)) => {
                 gens.push(to_gen(key.to_string(), &m));
@@ -149,6 +164,12 @@ pub fn remote_sweep(
         }
     }
     let keep = retain(&gens, policy, now);
+    tracing::info!(
+        manifests = manifests.len(),
+        garbage_roots = garbage_roots.len(),
+        retained = keep.len(),
+        "remote sweep: manifests read"
+    );
 
     let mut mark: HashSet<&str> = HashSet::new();
     for (key, _, m) in &manifests {
@@ -159,9 +180,14 @@ pub fn remote_sweep(
 
     // Live nar keys: URL fields of retained narinfos (the only per-object reads).
     let mut live_nars: HashSet<String> = HashSet::new();
+    let mut read = 0usize;
     for (h, _) in &narinfos {
         if !mark.contains(h) {
             continue;
+        }
+        read += 1;
+        if read % PROGRESS_EVERY == 0 {
+            tracing::info!(read, marked = mark.len(), "remote sweep: reading narinfos");
         }
         if let Some(raw) = remote.get(&format!("{h}.narinfo"))?
             && let Ok(info) = crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?)
@@ -169,6 +195,7 @@ pub fn remote_sweep(
             live_nars.insert(info.url);
         }
     }
+    tracing::info!(live_nars = live_nars.len(), "remote sweep: narinfos read");
 
     let mut report = SweepReport {
         retained_manifests: keep.len(),
@@ -183,6 +210,9 @@ pub fn remote_sweep(
             remote.delete(&key)?;
         }
         report.deleted.push(key);
+        if report.deleted.len() % PROGRESS_EVERY == 0 {
+            tracing::info!(deleted = report.deleted.len(), dry_run, "remote sweep: deleting");
+        }
         Ok(())
     };
 

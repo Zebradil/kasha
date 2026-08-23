@@ -41,6 +41,13 @@ fn to_gen(id: String, m: &Manifest) -> Gen {
 /// local-origin gen (box may hold the only copy), then sweeps objects.
 pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<SweepReport> {
     let manifests = store.manifests()?;
+    // No manifests means no mark set, which would sweep the whole store. That
+    // is never a retention decision — it is a store that has not synced yet
+    // (fresh volume, restored backup), so leave it alone.
+    if manifests.is_empty() {
+        tracing::info!("box sweep skipped: no manifests to mark from");
+        return Ok(SweepReport::default());
+    }
     let gens: Vec<Gen> = manifests
         .iter()
         .map(|(_, m)| to_gen(format!("{}/{}", m.flake, m.gen_id), m))
@@ -425,6 +432,32 @@ References: \n"
         store.mark_mirrored("znix", "local-1-x").unwrap();
         let r = box_sweep(&store, now, Duration::ZERO).unwrap();
         assert!(r.deleted.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn box_sweep_spares_a_store_with_no_manifests() {
+        let now = SystemTime::now();
+        let dir = std::env::temp_dir().join(format!(
+            "kasha-gc-empty-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir).unwrap();
+        let (h, info, nar) = object('a', "pkg-a");
+        store.put_nar(&format!("{h}.nar.xz"), &nar[..]).unwrap();
+        store
+            .put_narinfo(&NarInfo::parse(&info).unwrap(), info.as_bytes())
+            .unwrap();
+
+        // Unreachable from any manifest and past every grace: still spared,
+        // because an empty mark set means "not synced", not "retain nothing".
+        let r = box_sweep(&store, now, Duration::ZERO).unwrap();
+        assert!(r.deleted.is_empty());
+        assert!(store.has(h.as_str()));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

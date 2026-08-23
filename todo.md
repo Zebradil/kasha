@@ -39,12 +39,12 @@ Regardless of the verdict: `/nix-cache-info` could advertise a low `narinfo-cach
 so clients re-check a LAN box instead of trusting a month-old narinfo. Check that nix honours it
 from the cache side before building it.
 
-### Box GC is effectively unobservable in production
+### Box GC cannot be triggered on demand
 
-`gc_loop` sleeps `KASHA_GC_INTERVAL` (default 86400) *before* its first sweep, so a box that
-restarts more often than daily never sweeps at all, and there is no way to trigger a sweep on
-demand. A sweep-on-boot (after the first mirror-down) or an authenticated trigger endpoint would
-make box GC both testable and reliable. Small change; worth doing the next time GC is touched.
+Scheduling now survives restarts (`state/last-sweep`), but there is still no way to ask for a
+sweep — testing one means shortening `KASHA_GC_INTERVAL` and restarting the pod. An
+authenticated `POST /gc` (or a `--sweep-now` flag) would make it a one-liner. Worth doing the
+next time GC is touched; not urgent while the timer works.
 
 ## Client selection
 

@@ -78,7 +78,7 @@ pub fn retain(gens: &[Gen], policy: &Policy, now: SystemTime) -> HashSet<String>
         } else {
             policy.other
         };
-        group.sort_by(|a, b| b.time.cmp(&a.time));
+        group.sort_by_key(|g| std::cmp::Reverse(g.time));
         for (idx, g) in group.iter().enumerate() {
             let age = now.duration_since(g.time).unwrap_or(Duration::ZERO);
             if idx < p.keep_newest || age < p.max_age {

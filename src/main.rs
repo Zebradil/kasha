@@ -301,10 +301,23 @@ fn sync_loop(app: Arc<server::App>, s3: S3Remote, upstreams: Vec<String>, interv
 }
 
 fn gc_loop(app: Arc<server::App>, interval: u64) {
+    let interval = Duration::from_secs(interval);
     loop {
-        std::thread::sleep(Duration::from_secs(interval));
+        // Sleep only the remainder of the interval since the last sweep, which
+        // survives restarts: waiting a full interval from boot means a box that
+        // restarts more often than that never sweeps at all, while sweeping
+        // unconditionally on boot would sweep every restart of a crash loop.
+        let elapsed = app
+            .store
+            .last_sweep()
+            .and_then(|t| t.elapsed().ok())
+            .unwrap_or(interval);
+        std::thread::sleep(interval.saturating_sub(elapsed));
         if let Err(e) = gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
             tracing::warn!(error = format!("{e:#}"), "box sweep failed");
+        }
+        if let Err(e) = app.store.record_sweep() {
+            tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
         }
     }
 }

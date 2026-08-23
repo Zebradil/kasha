@@ -268,10 +268,11 @@ not from here.
 
 ## 5. Box GC
 
-**The box has never swept.** `gc_loop` sleeps `KASHA_GC_INTERVAL` *before* its first sweep, the
-default is 86400s, and the deployment does not set the variable — so a pod that restarts more
-often than daily never sweeps at all. Exercising it requires temporarily shortening the interval,
-which restarts the pod.
+**The box has never swept.** The deployment does not set `KASHA_GC_INTERVAL`, so the interval is
+the 86400s default and the first sweep is still ahead. The box stamps each sweep in
+`state/last-sweep` and sleeps only the remainder of the interval since that stamp, so a restart no
+longer pushes the schedule back — but there is no on-demand trigger, so exercising a sweep means
+temporarily shortening the interval, which restarts the pod.
 
 What the sweep does with defaults: keep the newest **3** manifests per `(branch, attr)` group on
 `main`, **1** per non-main group, plus every unmirrored local-origin generation (the box may hold
@@ -287,8 +288,9 @@ retention.
 > The restart also drops the box for a few seconds and forces an index rescan of every narinfo on
 > boot.
 
-The 24h mtime grace strongly limits the blast radius on a recently repopulated store: objects
-written in the last day are skipped regardless of retention. (The PVC was recreated recently at
+Two things bound the blast radius. The 24h mtime grace skips objects written in the last day
+regardless of retention, and a store holding no manifests is skipped outright (an empty mark set
+means "not synced yet", never "retain nothing"). (The PVC was recreated recently at
 the time of writing, so a sweep now would likely report `deleted=0` with a high `skipped_young` —
 verify from the log line rather than assuming.)
 

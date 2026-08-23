@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::time::SystemTime;
 
 use crate::manifest::Manifest;
 use crate::narinfo::NarInfo;
@@ -157,6 +158,25 @@ impl Store {
     }
 
     // --- state markers -----------------------------------------------------
+
+    fn sweep_stamp(&self) -> PathBuf {
+        self.root.join("state").join("last-sweep")
+    }
+
+    /// When the last box sweep was attempted, from the stamp's mtime. `None`
+    /// on a store that has never swept.
+    pub fn last_sweep(&self) -> Option<SystemTime> {
+        fs::metadata(self.sweep_stamp())
+            .and_then(|m| m.modified())
+            .ok()
+    }
+
+    /// Stamp a sweep attempt — outcome-independent, so a failing sweep keeps
+    /// the cadence instead of retrying without pause.
+    pub fn record_sweep(&self) -> Result<()> {
+        fs::write(self.sweep_stamp(), b"")?;
+        Ok(())
+    }
 
     fn marker(&self, kind: &str, flake: &str, gen_id: &str) -> Result<PathBuf> {
         Ok(self.root.join("state").join(kind).join(format!(
@@ -312,6 +332,7 @@ fn write_atomic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     const REAL: &str = "StorePath: /nix/store/v4f0jj9sz97ckskvacf40llz4nfr19jf-hello-2.12.3\n\
 URL: nar/00g966jlz9h37xkb9pmr3rc700i4k19mkyqm3gmwvlaik16qam5x.nar.zst\n\
@@ -411,5 +432,19 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         assert!(!s.is_local_origin("znix", "main-abc-x"));
         assert_eq!(s.manifests().unwrap().len(), 0);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sweep_stamp_round_trips() {
+        let dir = tmp();
+        let store = Store::open(&dir).unwrap();
+        assert!(store.last_sweep().is_none());
+        store.record_sweep().unwrap();
+        let t = store.last_sweep().expect("stamp recorded");
+        assert!(t.elapsed().unwrap() < Duration::from_secs(60));
+        // Survives a reopen: the schedule must not restart with the process.
+        let reopened = Store::open(&dir).unwrap();
+        assert_eq!(reopened.last_sweep().unwrap(), t);
+        let _ = fs::remove_dir_all(dir);
     }
 }

@@ -49,6 +49,25 @@
         {
           kasha = mkKasha pkgs.rustPlatform;
           default = self.packages.${system}.kasha;
+
+          # The resolve -> sign -> push core every producer runs. Shipped here
+          # so a fix reaches producers through the same flake input that pins
+          # `kasha emit`, which this script calls to publish the manifest.
+          #
+          # KASHA_BIN is deliberately not baked in: producers pass their own
+          # emitter path, and hard-wiring one would make this script depend on
+          # the Rust build it is often used to publish.
+          kasha-cache-push = pkgs.writeShellApplication {
+            name = "kasha-cache-push";
+            runtimeInputs = with pkgs; [
+              git
+              coreutils
+              gnugrep
+              gnused
+              findutils
+            ];
+            text = builtins.readFile ./scripts/cache-push.sh;
+          };
         }
         // lib.optionalAttrs (lib.hasSuffix "linux" system) rec {
           # Static musl build: the only thing the OCI image ships.
@@ -93,6 +112,9 @@
         {
           # cargo test runs in the package's checkPhase.
           build = self.packages.${system}.kasha;
+
+          # writeShellApplication shellchecks the script in its build.
+          kasha-cache-push = self.packages.${system}.kasha-cache-push;
 
           actionlint =
             pkgs.runCommand "actionlint"

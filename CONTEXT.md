@@ -41,6 +41,14 @@ by listing the `roots/` prefix; mirroring is a dumb fetch of the listed paths â€
 no closure expansion on the box.
 _Avoid_: root manifest (v2, roots-only â€” dead), index
 
+**kasha-cache-push**:
+The producer-side script kasha ships (`packages.kasha-cache-push`,
+`scripts/cache-push.sh`):
+resolve a flake attr's build closure, `nix store sign` it, `nix copy` it to the remote
+cache, then `kasha emit` the manifest. Lives here rather than in each producer repo so
+the push and the manifest format it writes are pinned by one flake input.
+_Avoid_: populate-nix-cache (the pre-move name in znix)
+
 **Generation**:
 One published set of build outputs for one flake, identified by a gen-id and
 timestamp, described by exactly one root manifest.

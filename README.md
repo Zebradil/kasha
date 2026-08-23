@@ -13,6 +13,7 @@ S3-compatible remote cache.
 - `kasha emit`: build and publish a v3 generation manifest (closure paths on stdin).
 - `kasha gc`: sweep the remote cache; run from CI with delete-capable credentials.
 - `nixosModules.consumer`: host-scoped static substituter selection — box first, remote cache second, low `connect-timeout`.
+- `packages.<system>.kasha-cache-push`: the producer-side resolve → sign → push → emit script.
 - `packages.<system>.oci-image`: box OCI image (static binary only), published as `ghcr.io/zebradil/kasha-box`.
 
 The box holds a flat binary-cache layout on disk (same layout as the remote
@@ -86,6 +87,22 @@ nix-store --query --requisites ./result \
 The box discovers new manifests under `roots/<flake>/`, fetches listed paths
 from the remote cache first and upstreams for the rest, and records misses as
 gaps (re-probed each cycle, reported in `/status` — never a failing unit).
+
+`packages.kasha-cache-push` wraps that whole sequence — resolve a flake attr's
+build closure, `nix store sign` it, `nix copy` it to S3, then emit the manifest
+— so producers pin the push logic and the manifest format from the same flake
+input instead of vendoring a copy that drifts:
+
+```sh
+CACHE_S3_URL='s3://znix-cache?endpoint=…&region=auto' \
+CACHE_SIGNING_KEY_FILE=./secret-key \
+KASHA_FLAKE=znix KASHA_BIN="$(nix build --no-link --print-out-paths .#kasha)/bin/kasha" \
+  nix run 'github:Zebradil/kasha#kasha-cache-push' -- checks.x86_64-linux.host
+```
+
+Every step is skipped when its inputs are empty, so a key-less or
+credential-less run is a dry no-op. See `scripts/cache-push.sh` for the full
+environment contract.
 
 ## Push from a client
 

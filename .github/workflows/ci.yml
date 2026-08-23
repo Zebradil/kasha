@@ -48,7 +48,9 @@ jobs:
           # *build* closure — every nixpkgs input, tens of GB that cache.nixos.org
           # already serves. What CI needs back is the outputs themselves.
           attrs=()
-          while IFS= read -r a; do
+          # `nix eval --raw` emits no trailing newline, so a plain `read` loop
+          # silently drops the last attribute.
+          while IFS= read -r a || [ -n "$a" ]; do
             [ -n "$a" ] && attrs+=(".#checks.${system}.${a}")
           done < <(
             nix eval --raw ".#checks.${system}" \

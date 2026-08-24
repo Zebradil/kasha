@@ -3,8 +3,17 @@
 //! speaking presigned requests via ureq — no AWS SDK.
 
 use anyhow::{Context, Result, bail};
+use rusty_s3::actions::{DeleteObjects, DeleteObjectsResponse, ObjectIdentifier};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use std::time::{Duration, SystemTime};
+
+/// Concurrent requests a caller may fan out over one remote. Remote sweeps are
+/// round-trip-latency bound, not CPU or bandwidth bound, so this sits far above
+/// the core count; the connection pool below is sized to match.
+pub const FANOUT: usize = 32;
+
+/// Keys per `DeleteObjects` request; the S3 API caps it at 1000.
+const DELETE_BATCH: usize = 1000;
 
 pub trait Remote: Send + Sync {
     /// Keys under a prefix with their LastModified stamps.
@@ -15,6 +24,14 @@ pub trait Remote: Send + Sync {
     fn exists(&self, key: &str) -> Result<bool>;
     fn put(&self, key: &str, body: &[u8]) -> Result<()>;
     fn delete(&self, key: &str) -> Result<()>;
+    /// Delete many keys. One round trip per key by default; S3 overrides it
+    /// with batched `DeleteObjects`.
+    fn delete_many(&self, keys: &[String]) -> Result<()> {
+        for key in keys {
+            self.delete(key)?;
+        }
+        Ok(())
+    }
 }
 
 const SIGN_TTL: Duration = Duration::from_secs(600);
@@ -64,7 +81,11 @@ impl S3Remote {
         Ok(Self {
             bucket,
             creds: Credentials::new(key, secret),
-            agent: ureq::Agent::new_with_defaults(),
+            agent: ureq::Agent::config_builder()
+                .max_idle_connections(FANOUT)
+                .max_idle_connections_per_host(FANOUT)
+                .build()
+                .into(),
         })
     }
 }
@@ -165,6 +186,52 @@ impl Remote for S3Remote {
             .delete(url.as_str())
             .call()
             .with_context(|| format!("DELETE {key}"))?;
+        Ok(())
+    }
+
+    fn delete_many(&self, keys: &[String]) -> Result<()> {
+        for chunk in keys.chunks(DELETE_BATCH) {
+            let ids: Vec<ObjectIdentifier> = chunk
+                .iter()
+                .map(|k| ObjectIdentifier::new(k.clone()))
+                .collect();
+            let mut action = DeleteObjects::new(&self.bucket, Some(&self.creds), ids.iter());
+            // The body must be known before signing: S3 covers Content-MD5 in
+            // the signature, so build it from a clone and sign after.
+            let (body, md5) = action.clone().body_with_md5();
+            action.headers_mut().insert("Content-MD5", md5.clone());
+            let url = action.sign(SIGN_TTL);
+            let text = self
+                .agent
+                .post(url.as_str())
+                .header("Content-MD5", &md5)
+                .send(body.as_bytes())
+                .context("DeleteObjects")?
+                .body_mut()
+                .read_to_string()?;
+            match DeleteObjectsResponse::parse(&text) {
+                Ok(resp) if resp.errors.is_empty() => {}
+                Ok(resp) => {
+                    let e = &resp.errors[0];
+                    bail!(
+                        "DeleteObjects: {} of {} keys failed, first {}: {} {}",
+                        resp.errors.len(),
+                        chunk.len(),
+                        e.key,
+                        e.code,
+                        e.message
+                    );
+                }
+                // A 2xx with an unparseable body means the deletes went
+                // through but per-key errors can't be read; the sweep is
+                // idempotent, so a later run catches whatever survived.
+                Err(err) => tracing::warn!(
+                    error = format!("{err}"),
+                    body = text.chars().take(200).collect::<String>(),
+                    "DeleteObjects response unparseable"
+                ),
+            }
+        }
         Ok(())
     }
 }

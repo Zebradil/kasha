@@ -9,20 +9,21 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::manifest::Manifest;
 use crate::narinfo::store_hash_of;
-use crate::remote::Remote;
+use crate::remote::{FANOUT, Remote};
 use crate::retention::{Gen, Policy, retain};
 use crate::store::Store;
 
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
 
-/// Every phase of a remote sweep is one HTTP round trip per object, so a large
-/// bucket can run for many minutes. Report progress this often to keep a slow
-/// sweep distinguishable from a wedged one.
-const PROGRESS_EVERY: usize = 100;
+/// A remote sweep reads one object per retained narinfo, so a large bucket runs
+/// for minutes even fanned out. Report progress this often to keep a slow sweep
+/// distinguishable from a wedged one.
+const PROGRESS_EVERY: usize = 1000;
 
 #[derive(Debug, Default)]
 pub struct SweepReport {
@@ -153,7 +154,11 @@ pub fn remote_sweep(
     let mut garbage_roots: Vec<(&str, SystemTime)> = Vec::new();
     for (i, (key, t)) in roots.iter().enumerate() {
         if i > 0 && i % PROGRESS_EVERY == 0 {
-            tracing::info!(read = i, total = roots.len(), "remote sweep: reading manifests");
+            tracing::info!(
+                read = i,
+                total = roots.len(),
+                "remote sweep: reading manifests"
+            );
         }
         match remote.get(key)?.as_deref().map(Manifest::parse) {
             Some(Ok(m)) => {
@@ -178,61 +183,83 @@ pub fn remote_sweep(
         }
     }
 
-    // Live nar keys: URL fields of retained narinfos (the only per-object reads).
-    let mut live_nars: HashSet<String> = HashSet::new();
-    let mut read = 0usize;
-    for (h, _) in &narinfos {
-        if !mark.contains(h) {
-            continue;
+    // Live nar keys: URL fields of retained narinfos (the only per-object
+    // reads). Each is an independent round trip, so fan them out.
+    let marked: Vec<&str> = narinfos
+        .iter()
+        .map(|(h, _)| *h)
+        .filter(|h| mark.contains(h))
+        .collect();
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let live_nars: HashSet<String> = std::thread::scope(|scope| -> Result<HashSet<String>> {
+        let workers: Vec<_> = (0..FANOUT.min(marked.len()))
+            .map(|_| {
+                scope.spawn(|| -> Result<Vec<String>> {
+                    let mut urls = Vec::new();
+                    while let Some(h) = marked.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        if let Some(raw) = remote.get(&format!("{h}.narinfo"))?
+                            && let Ok(info) =
+                                crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?)
+                        {
+                            urls.push(info.url);
+                        }
+                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n.is_multiple_of(PROGRESS_EVERY) {
+                            tracing::info!(
+                                read = n,
+                                marked = marked.len(),
+                                "remote sweep: reading narinfos"
+                            );
+                        }
+                    }
+                    Ok(urls)
+                })
+            })
+            .collect();
+        let mut live = HashSet::new();
+        for w in workers {
+            live.extend(w.join().expect("narinfo reader panicked")?);
         }
-        read += 1;
-        if read % PROGRESS_EVERY == 0 {
-            tracing::info!(read, marked = mark.len(), "remote sweep: reading narinfos");
-        }
-        if let Some(raw) = remote.get(&format!("{h}.narinfo"))?
-            && let Ok(info) = crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?)
-        {
-            live_nars.insert(info.url);
-        }
-    }
+        Ok(live)
+    })?;
     tracing::info!(live_nars = live_nars.len(), "remote sweep: narinfos read");
 
     let mut report = SweepReport {
         retained_manifests: keep.len(),
         ..Default::default()
     };
-    let kill = |key: String, t: SystemTime, report: &mut SweepReport| -> Result<()> {
+    // Collect first, delete after: batched deletes need the whole set, and a
+    // sweep that dies mid-delete is picked up by the next run either way.
+    let kill = |key: String, t: SystemTime, report: &mut SweepReport| {
         if now.duration_since(t).unwrap_or(Duration::ZERO) < grace {
             report.skipped_young += 1;
-            return Ok(());
-        }
-        if !dry_run {
-            remote.delete(&key)?;
+            return;
         }
         report.deleted.push(key);
-        if report.deleted.len() % PROGRESS_EVERY == 0 {
-            tracing::info!(deleted = report.deleted.len(), dry_run, "remote sweep: deleting");
-        }
-        Ok(())
     };
 
     for (key, t, _) in &manifests {
         if !keep.contains(key) {
-            kill(key.clone(), *t, &mut report)?;
+            kill(key.clone(), *t, &mut report);
         }
     }
     for (key, t) in garbage_roots {
-        kill(key.to_string(), t, &mut report)?;
+        kill(key.to_string(), t, &mut report);
     }
     for (h, t) in &narinfos {
         if !mark.contains(h) {
-            kill(format!("{h}.narinfo"), *t, &mut report)?;
+            kill(format!("{h}.narinfo"), *t, &mut report);
         }
     }
     for (key, t) in &nars {
         if !live_nars.contains(*key) {
-            kill(key.to_string(), *t, &mut report)?;
+            kill(key.to_string(), *t, &mut report);
         }
+    }
+    if !dry_run {
+        tracing::info!(deleted = report.deleted.len(), "remote sweep: deleting");
+        remote.delete_many(&report.deleted)?;
     }
     tracing::info!(
         retained = report.retained_manifests,

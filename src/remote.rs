@@ -97,6 +97,48 @@ fn status_of(e: &ureq::Error) -> Option<u16> {
     }
 }
 
+/// Attempts after the first before a request is given up on.
+const RETRIES: u32 = 6;
+const BACKOFF_BASE: Duration = Duration::from_millis(500);
+
+/// A sweep of a large bucket fans out enough requests to trip the endpoint's
+/// rate limit (R2 answers 429), and a rate limit is not a failure — it is a
+/// request to come back later.
+fn retryable(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::StatusCode(c) => matches!(c, 429 | 500 | 502 | 503 | 504),
+        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed => true,
+        _ => false,
+    }
+}
+
+/// Presigned URLs stay valid for `SIGN_TTL`, well past the total backoff, so a
+/// retry can replay the same signed request.
+fn with_retry<T>(
+    what: &str,
+    key: &str,
+    mut f: impl FnMut() -> Result<T, ureq::Error>,
+) -> Result<T, ureq::Error> {
+    for attempt in 0..RETRIES {
+        match f() {
+            Err(e) if retryable(&e) => {
+                let wait = BACKOFF_BASE * 2u32.pow(attempt);
+                tracing::warn!(
+                    what,
+                    key,
+                    attempt = attempt + 1,
+                    wait_ms = wait.as_millis(),
+                    error = format!("{e}"),
+                    "request failed, retrying"
+                );
+                std::thread::sleep(wait);
+            }
+            r => return r,
+        }
+    }
+    f()
+}
+
 impl Remote for S3Remote {
     fn list(&self, prefix: &str) -> Result<Vec<(String, SystemTime)>> {
         let mut out = Vec::new();
@@ -108,10 +150,7 @@ impl Remote for S3Remote {
                 action.with_continuation_token(t);
             }
             let url = action.sign(SIGN_TTL);
-            let text = self
-                .agent
-                .get(url.as_str())
-                .call()
+            let text = with_retry("LIST", prefix, || self.agent.get(url.as_str()).call())
                 .context("list")?
                 .body_mut()
                 .read_to_string()?;
@@ -146,7 +185,7 @@ impl Remote for S3Remote {
             .bucket
             .get_object(Some(&self.creds), key)
             .sign(SIGN_TTL);
-        match self.agent.get(url.as_str()).call() {
+        match with_retry("GET", key, || self.agent.get(url.as_str()).call()) {
             Ok(resp) => Ok(Some(Box::new(resp.into_body().into_reader()))),
             Err(e) if status_of(&e) == Some(404) => Ok(None),
             Err(e) => Err(e).with_context(|| format!("GET {key}")),
@@ -158,7 +197,7 @@ impl Remote for S3Remote {
             .bucket
             .head_object(Some(&self.creds), key)
             .sign(SIGN_TTL);
-        match self.agent.head(url.as_str()).call() {
+        match with_retry("HEAD", key, || self.agent.head(url.as_str()).call()) {
             Ok(_) => Ok(true),
             Err(e) if matches!(status_of(&e), Some(404) | Some(403)) => Ok(false),
             Err(e) => Err(e).with_context(|| format!("HEAD {key}")),
@@ -170,9 +209,7 @@ impl Remote for S3Remote {
             .bucket
             .put_object(Some(&self.creds), key)
             .sign(SIGN_TTL);
-        self.agent
-            .put(url.as_str())
-            .send(body)
+        with_retry("PUT", key, || self.agent.put(url.as_str()).send(body))
             .with_context(|| format!("PUT {key}"))?;
         Ok(())
     }
@@ -182,9 +219,7 @@ impl Remote for S3Remote {
             .bucket
             .delete_object(Some(&self.creds), key)
             .sign(SIGN_TTL);
-        self.agent
-            .delete(url.as_str())
-            .call()
+        with_retry("DELETE", key, || self.agent.delete(url.as_str()).call())
             .with_context(|| format!("DELETE {key}"))?;
         Ok(())
     }
@@ -201,14 +236,15 @@ impl Remote for S3Remote {
             let (body, md5) = action.clone().body_with_md5();
             action.headers_mut().insert("Content-MD5", md5.clone());
             let url = action.sign(SIGN_TTL);
-            let text = self
-                .agent
-                .post(url.as_str())
-                .header("Content-MD5", &md5)
-                .send(body.as_bytes())
-                .context("DeleteObjects")?
-                .body_mut()
-                .read_to_string()?;
+            let text = with_retry("DeleteObjects", &chunk[0], || {
+                self.agent
+                    .post(url.as_str())
+                    .header("Content-MD5", &md5)
+                    .send(body.as_bytes())
+            })
+            .context("DeleteObjects")?
+            .body_mut()
+            .read_to_string()?;
             match DeleteObjectsResponse::parse(&text) {
                 Ok(resp) if resp.errors.is_empty() => {}
                 Ok(resp) => {
@@ -233,6 +269,38 @@ impl Remote for S3Remote {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn retries_rate_limits_then_succeeds() {
+        let calls = Cell::new(0);
+        let out = with_retry("DELETE", "x.narinfo", || {
+            calls.set(calls.get() + 1);
+            if calls.get() < 3 {
+                Err(ureq::Error::StatusCode(429))
+            } else {
+                Ok(calls.get())
+            }
+        })
+        .unwrap();
+        assert_eq!((out, calls.get()), (3, 3));
+    }
+
+    #[test]
+    fn gives_up_on_non_retryable_status() {
+        let calls = Cell::new(0);
+        let err = with_retry("DELETE", "x.narinfo", || {
+            calls.set(calls.get() + 1);
+            Err::<(), _>(ureq::Error::StatusCode(403))
+        })
+        .unwrap_err();
+        assert_eq!((status_of(&err), calls.get()), (Some(403), 1));
     }
 }
 

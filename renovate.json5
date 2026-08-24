@@ -1,0 +1,26 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:best-practices',
+    'helpers:pinGitHubActionDigestsToSemver',
+    'schedule:nonOfficeHours',
+  ],
+  gitIgnoredAuthors: [
+    'renovate[bot]@users.noreply.github.com',
+    'github-actions[bot]@users.noreply.github.com',
+  ],
+  packageRules: [
+    // Enable automerging for non-major updates to all dependencies
+    {
+      automerge: true,
+      matchUpdateTypes: ["minor", "patch", "pin", "digest"],
+    },
+    // Group PRs for GitHub Action updates into a single PR
+    {
+      description: "Group GitHub Action updates into a single PR",
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      groupSlug: "github-actions",
+    },
+  ],
+}

@@ -230,16 +230,11 @@ impl Remote for S3Remote {
                 .iter()
                 .map(|k| ObjectIdentifier::new(k.clone()))
                 .collect();
-            let mut action = DeleteObjects::new(&self.bucket, Some(&self.creds), ids.iter());
-            // The body must be known before signing: S3 covers Content-MD5 in
-            // the signature, so build it from a clone and sign after.
-            let (body, md5) = action.clone().body_with_md5();
-            action.headers_mut().insert("Content-MD5", md5.clone());
-            let url = action.sign(SIGN_TTL);
+            let (url, body, md5) = sign_delete_objects(&self.bucket, &self.creds, &ids);
             let text = with_retry("DeleteObjects", &chunk[0], || {
                 self.agent
-                    .post(url.as_str())
-                    .header("Content-MD5", &md5)
+                    .post(&url)
+                    .header("content-md5", &md5)
                     .send(body.as_bytes())
             })
             .context("DeleteObjects")?
@@ -272,6 +267,22 @@ impl Remote for S3Remote {
     }
 }
 
+/// Sign one batched `DeleteObjects` POST, returning the presigned URL, the XML
+/// body, and its Content-MD5. The body must be known before signing: S3 covers
+/// Content-MD5 in the signature, so it is built from a clone and signed after.
+/// The header name must be lowercase — rusty-s3 copies it verbatim into
+/// `X-Amz-SignedHeaders`, and SigV4 only accepts lowercase names there.
+fn sign_delete_objects(
+    bucket: &Bucket,
+    creds: &Credentials,
+    ids: &[ObjectIdentifier],
+) -> (String, String, String) {
+    let mut action = DeleteObjects::new(bucket, Some(creds), ids.iter());
+    let (body, md5) = action.clone().body_with_md5();
+    action.headers_mut().insert("content-md5", md5.clone());
+    (action.sign(SIGN_TTL).to_string(), body, md5)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +312,23 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!((status_of(&err), calls.get()), (Some(403), 1));
+    }
+
+    #[test]
+    fn delete_objects_signs_lowercase_header_name() {
+        let bucket = Bucket::new(
+            "https://acc.r2.cloudflarestorage.com".parse().unwrap(),
+            UrlStyle::Path,
+            "b".to_string(),
+            "auto".to_string(),
+        )
+        .unwrap();
+        let ids = [ObjectIdentifier::new("a.narinfo".to_string())];
+        let (url, _, _) = sign_delete_objects(&bucket, &Credentials::new("k", "s"), &ids);
+        assert!(
+            url.contains("X-Amz-SignedHeaders=content-md5%3Bhost"),
+            "SigV4 rejects uppercase signed header names: {url}"
+        );
     }
 }
 

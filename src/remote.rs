@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, bail};
 use rusty_s3::actions::{DeleteObjects, DeleteObjectsResponse, ObjectIdentifier};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Concurrent requests a caller may fan out over one remote. Remote sweeps are
@@ -14,6 +15,51 @@ pub const FANOUT: usize = 32;
 
 /// Keys per `DeleteObjects` request; the S3 API caps it at 1000.
 const DELETE_BATCH: usize = 1000;
+
+/// Run `f` over `items` on `FANOUT` workers, logging `label` with a running
+/// count every `every` items. Results come back in completion order, not input
+/// order. Every worker is joined even after one fails, so a partial sweep
+/// finishes what it started; the first error seen wins.
+pub fn fan_out<T: Sync, R: Send>(
+    items: &[T],
+    every: usize,
+    label: &str,
+    f: impl Fn(&T) -> Result<R> + Sync,
+) -> Result<Vec<R>> {
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..FANOUT.min(items.len()))
+            .map(|_| {
+                scope.spawn(|| -> Result<Vec<R>> {
+                    let mut out = Vec::new();
+                    while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        out.push(f(item)?);
+                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n.is_multiple_of(every) {
+                            tracing::info!(done = n, total = items.len(), "{label}");
+                        }
+                    }
+                    Ok(out)
+                })
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut first_err = None;
+        for w in workers {
+            match w.join().expect("fan_out worker panicked") {
+                Ok(v) => out.extend(v),
+                Err(e) if first_err.is_none() => first_err = Some(e),
+                Err(_) => {}
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(out),
+        }
+    })
+}
 
 pub trait Remote: Send + Sync {
     /// Keys under a prefix with their LastModified stamps.
@@ -225,7 +271,8 @@ impl Remote for S3Remote {
     }
 
     fn delete_many(&self, keys: &[String]) -> Result<()> {
-        for chunk in keys.chunks(DELETE_BATCH) {
+        let batches: Vec<&[String]> = keys.chunks(DELETE_BATCH).collect();
+        fan_out(&batches, 1, "deleting object batches", |chunk| {
             let ids: Vec<ObjectIdentifier> = chunk
                 .iter()
                 .map(|k| ObjectIdentifier::new(k.clone()))
@@ -262,7 +309,8 @@ impl Remote for S3Remote {
                     "DeleteObjects response unparseable"
                 ),
             }
-        }
+            Ok(())
+        })?;
         Ok(())
     }
 }
@@ -312,6 +360,24 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!((status_of(&err), calls.get()), (Some(403), 1));
+    }
+
+    #[test]
+    fn fan_out_visits_every_item_exactly_once() {
+        let items: Vec<usize> = (0..5000).collect();
+        let mut got = fan_out(&items, 100, "test", |i| Ok(*i)).unwrap();
+        got.sort_unstable();
+        assert_eq!(got, items);
+    }
+
+    #[test]
+    fn fan_out_surfaces_worker_error() {
+        let items: Vec<usize> = (0..5000).collect();
+        let err = fan_out(&items, 100, "test", |i| {
+            if *i == 4999 { bail!("boom") } else { Ok(*i) }
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "boom");
     }
 
     #[test]

@@ -9,12 +9,11 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::manifest::Manifest;
 use crate::narinfo::store_hash_of;
-use crate::remote::{FANOUT, Remote};
+use crate::remote::{Remote, fan_out};
 use crate::retention::{Gen, Policy, retain};
 use crate::store::Store;
 
@@ -190,39 +189,22 @@ pub fn remote_sweep(
         .map(|(h, _)| *h)
         .filter(|h| mark.contains(h))
         .collect();
-    let next = AtomicUsize::new(0);
-    let done = AtomicUsize::new(0);
-    let live_nars: HashSet<String> = std::thread::scope(|scope| -> Result<HashSet<String>> {
-        let workers: Vec<_> = (0..FANOUT.min(marked.len()))
-            .map(|_| {
-                scope.spawn(|| -> Result<Vec<String>> {
-                    let mut urls = Vec::new();
-                    while let Some(h) = marked.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        if let Some(raw) = remote.get(&format!("{h}.narinfo"))?
-                            && let Ok(info) =
-                                crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?)
-                        {
-                            urls.push(info.url);
-                        }
-                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        if n.is_multiple_of(PROGRESS_EVERY) {
-                            tracing::info!(
-                                read = n,
-                                marked = marked.len(),
-                                "remote sweep: reading narinfos"
-                            );
-                        }
-                    }
-                    Ok(urls)
-                })
-            })
-            .collect();
-        let mut live = HashSet::new();
-        for w in workers {
-            live.extend(w.join().expect("narinfo reader panicked")?);
-        }
-        Ok(live)
-    })?;
+    let live_nars: HashSet<String> = fan_out(
+        &marked,
+        PROGRESS_EVERY,
+        "remote sweep: reading narinfos",
+        |h| {
+            let Some(raw) = remote.get(&format!("{h}.narinfo"))? else {
+                return Ok(None);
+            };
+            Ok(crate::narinfo::NarInfo::parse(std::str::from_utf8(&raw)?)
+                .ok()
+                .map(|info| info.url))
+        },
+    )?
+    .into_iter()
+    .flatten()
+    .collect();
     tracing::info!(live_nars = live_nars.len(), "remote sweep: narinfos read");
 
     let mut report = SweepReport {

@@ -255,17 +255,6 @@ fn main() -> Result<()> {
                     key
                 );
             }
-            println!(
-                "retained {} manifests, {} objects {}, {} young skipped",
-                report.retained_manifests,
-                report.deleted.len(),
-                if dry_run {
-                    "to delete (dry run)"
-                } else {
-                    "deleted"
-                },
-                report.skipped_young
-            );
             Ok(())
         }
     }

@@ -30,8 +30,19 @@ jobs:
         run: |
           args=()
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          # Progress and summary go to stderr and stay in the log; the
+          # per-object list is stdout and would be hundreds of thousands of
+          # unreadable lines here, so it is captured for the artifact below.
           docker run --rm \
             -e AWS_ACCESS_KEY_ID \
             -e AWS_SECRET_ACCESS_KEY \
             -e KASHA_REMOTE \
-            ghcr.io/zebradil/kasha-box:edge gc "${args[@]}"
+            ghcr.io/zebradil/kasha-box:edge gc "${args[@]}" > deleted.txt
+
+      - name: Upload deleted object list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deleted-objects
+          path: deleted.txt
+          retention-days: 14

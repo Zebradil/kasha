@@ -71,6 +71,10 @@ impl App {
 /// produces (nix opens `http-connections`, 25 by default, per builder), not
 /// the box's core count.
 ///
+/// The cap covers responses, not sockets: tiny_http keeps accepting and
+/// parsing behind a blocked `acquire`, so a connection flood still queues in
+/// its reader. Shedding those needs a depth probe tiny_http does not expose.
+///
 /// ponytail: a hard cap; slots are only reclaimed when the client finishes or
 /// its TCP connection dies (tiny_http sets no write timeout, so a suspended
 /// laptop holds a slot until keepalive reaps it). Non-blocking I/O is the
@@ -84,22 +88,44 @@ pub fn serve(app: Arc<App>, listen: &str, max_inflight: usize) -> Result<()> {
         "kasha serving"
     );
     let slots = Arc::new(Slots::new(max_inflight));
+    let mut failures = 0u32;
     loop {
         let req = match server.recv() {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "accept failed");
+                failures += 1;
+                if failures >= MAX_ACCEPT_FAILURES {
+                    anyhow::bail!("listener failed {failures} times in a row: {e}");
+                }
+                // A wedged listener errors instantly; without this the loop
+                // spins a core and floods the log.
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
         };
+        failures = 0;
         let slot = slots.acquire();
         let app = app.clone();
-        std::thread::spawn(move || {
-            let _slot = slot;
-            handle(&app, req);
-        });
+        // Handlers block on I/O rather than recurse, so they need far less
+        // than the 8 MiB default a full cap would reserve.
+        let spawned = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let _slot = slot;
+                handle(&app, req);
+            });
+        if let Err(e) = spawned {
+            // Slot released with the closure; shed the request rather than
+            // unwinding the accept loop, which would take the server down.
+            tracing::error!(error = %e, "spawn failed, shedding request");
+        }
     }
 }
+
+/// Consecutive accept failures tolerated before `serve` gives up and lets the
+/// supervisor restart the process.
+const MAX_ACCEPT_FAILURES: u32 = 100;
 
 /// A counting semaphore over the in-flight request slots.
 struct Slots {

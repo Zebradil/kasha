@@ -42,7 +42,7 @@ Environment contract (all also available as flags, see `kasha serve --help`):
 | `KASHA_REMOTE`                              | remote cache `s3://bucket?endpoint=…&region=…`; mirroring and GC off when unset | —                         |
 | `KASHA_UPSTREAMS`                           | upstream substituters tried after the remote                                    | `https://cache.nixos.org` |
 | `KASHA_SYNC_INTERVAL` / `KASHA_GC_INTERVAL` | worker intervals, seconds                                                       | `300` / `86400`           |
-| `KASHA_MAX_INFLIGHT`                        | cap on concurrent requests; each in-flight response holds a slot until it ends | `256`                     |
+| `KASHA_MAX_INFLIGHT`                        | cap on concurrent requests; each in-flight response holds a slot until it ends  | `256`                     |
 
 The box needs read/write (never delete) remote credentials via `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 

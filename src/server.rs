@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::manifest::Manifest;
@@ -61,30 +61,80 @@ impl App {
     }
 }
 
-pub fn serve(app: Arc<App>, listen: &str, threads: usize) -> Result<()> {
-    let server = Arc::new(Server::http(listen).map_err(|e| anyhow::anyhow!("bind {listen}: {e}"))?);
-    tracing::info!(listen, threads, objects = app.store.len(), "kasha serving");
-    let mut handles = Vec::new();
-    for _ in 0..threads {
-        let server = server.clone();
-        let app = app.clone();
-        handles.push(std::thread::spawn(move || {
-            loop {
-                let req = match server.recv() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "accept failed");
-                        continue;
-                    }
-                };
-                handle(&app, req);
+/// Serve until the listener dies, with at most `max_inflight` requests in
+/// flight.
+///
+/// A response is written synchronously to its client, so an in-flight request
+/// occupies its slot for the whole transfer: one NAR to one slow client can
+/// hold a slot for minutes. Requests beyond the cap wait, health probes
+/// included — so the cap has to exceed the concurrency a real client fleet
+/// produces (nix opens `http-connections`, 25 by default, per builder), not
+/// the box's core count.
+///
+/// ponytail: a hard cap; slots are only reclaimed when the client finishes or
+/// its TCP connection dies (tiny_http sets no write timeout, so a suspended
+/// laptop holds a slot until keepalive reaps it). Non-blocking I/O is the
+/// upgrade path if the cap is ever reached in anger.
+pub fn serve(app: Arc<App>, listen: &str, max_inflight: usize) -> Result<()> {
+    let server = Server::http(listen).map_err(|e| anyhow::anyhow!("bind {listen}: {e}"))?;
+    tracing::info!(
+        listen,
+        max_inflight,
+        objects = app.store.len(),
+        "kasha serving"
+    );
+    let slots = Arc::new(Slots::new(max_inflight));
+    loop {
+        let req = match server.recv() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "accept failed");
+                continue;
             }
-        }));
+        };
+        let slot = slots.acquire();
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _slot = slot;
+            handle(&app, req);
+        });
     }
-    for h in handles {
-        let _ = h.join();
+}
+
+/// A counting semaphore over the in-flight request slots.
+struct Slots {
+    used: Mutex<usize>,
+    freed: Condvar,
+    max: usize,
+}
+
+impl Slots {
+    fn new(max: usize) -> Self {
+        Slots {
+            used: Mutex::new(0),
+            freed: Condvar::new(),
+            max: max.max(1),
+        }
     }
-    Ok(())
+
+    fn acquire(self: &Arc<Self>) -> Slot {
+        let mut used = self
+            .freed
+            .wait_while(self.used.lock().unwrap(), |used| *used >= self.max)
+            .unwrap();
+        *used += 1;
+        Slot(Arc::clone(self))
+    }
+}
+
+/// Releases its slot on drop, so a panicking handler cannot leak one.
+struct Slot(Arc<Slots>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        *self.0.used.lock().unwrap() -= 1;
+        self.0.freed.notify_one();
+    }
 }
 
 fn respond<R: Read>(req: Request, resp: Response<R>) {
@@ -264,6 +314,26 @@ References: \n";
             format!("{body}Sig: test-1:{}\n", BASE64.encode(&sig.to_bytes())),
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         )
+    }
+
+    #[test]
+    fn slots_bound_concurrency_and_release_on_drop() {
+        use std::time::Duration;
+        let slots = Arc::new(Slots::new(1));
+        let held = slots.acquire();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = Arc::clone(&slots);
+        std::thread::spawn(move || {
+            let _slot = waiting.acquire();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "acquire handed out more slots than the cap"
+        );
+        drop(held);
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("dropping a slot did not release it");
     }
 
     #[test]

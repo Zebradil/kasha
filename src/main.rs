@@ -54,8 +54,15 @@ enum Cmd {
         sync_interval_secs: u64,
         #[arg(long, env = "KASHA_GC_INTERVAL", default_value = "86400")]
         gc_interval_secs: u64,
-        #[arg(long, env = "KASHA_HTTP_THREADS", default_value = "8")]
-        threads: usize,
+        /// Cap on concurrent requests. Each in-flight response holds a slot
+        /// for its whole transfer, so this bounds slow readers, not CPU.
+        #[arg(
+            long,
+            env = "KASHA_MAX_INFLIGHT",
+            default_value = "256",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        max_inflight: u64,
     },
     /// Emit a v3 generation manifest (closure store paths on stdin).
     Emit {
@@ -134,7 +141,7 @@ fn main() -> Result<()> {
             upstreams,
             sync_interval_secs,
             gc_interval_secs,
-            threads,
+            max_inflight,
         } => {
             let app = Arc::new(server::App {
                 store: store::Store::open(&data)?,
@@ -161,7 +168,11 @@ fn main() -> Result<()> {
                 tracing::warn!("KASHA_REMOTE unset: mirroring and GC disabled");
             }
 
-            server::serve(app, &listen, threads)
+            if std::env::var_os("KASHA_HTTP_THREADS").is_some() {
+                tracing::warn!("KASHA_HTTP_THREADS is retired, use KASHA_MAX_INFLIGHT");
+            }
+
+            server::serve(app, &listen, max_inflight as usize)
         }
 
         Cmd::Emit {

@@ -93,7 +93,7 @@
       devShells = forAllSystems (
         { pkgs, ... }:
         {
-          default = pkgs.mkShellNoCC {
+          default = pkgs.mkShell {
             packages = [
               pkgs.cargo
               pkgs.rustc

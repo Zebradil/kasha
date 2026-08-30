@@ -49,29 +49,13 @@ next time GC is touched; not urgent while the timer works.
 
 ## Client selection
 
-### Selection shim
+### Selection shim / routing engine → sito
 
-The largest open item. Today's selection is a static substituter list plus a low
-`connect-timeout` (`nixosModules.consumer`), which taxes every off-network build by that timeout
-per substituter. Replace it with a localhost proxy substituter that probes box reachability and
-routes instantly, removing the tax entirely.
-
-Config-mutating the generated `nix.conf` in place does not fit NixOS well, so the shim must be a
-small always-running proxy, not a substituter-list rewriter.
-
-Needs pluggable **discovery backends**:
-
-- **static-endpoint** — configured box URL plus a reachability probe. Works anywhere, including
-  inside a k8s CNI overlay.
-- **mDNS** — zero-config for bare-metal/LAN-host deployments. Cannot cross a k3s CNI overlay
-  (link-local TTL=1 multicast does not bridge to the LAN); becomes relevant once the box moves to
-  a bare-metal host.
-
-### Full client-side routing engine
-
-Strictly a superset of the shim: multiple substituters, explicit priority/policy rules, metrics.
-Genuinely interesting, but revisit only once the shim exists. Terminology note: "routing" is
-reserved for this, "selection" for the box-vs-remote decision (`CONTEXT.md`).
+Designed and moved out: [sito](https://github.com/Zebradil/sito) is a standalone localhost
+substituter proxy (streaming, tiered upstream selection, reachability probes) that covers both
+the shim and the routing-engine ideas for roaming hosts. Neither project depends on the other;
+`nixosModules.consumer` stays the right answer for hosts pinned to the LAN. See sito's
+`docs/adr/` for the decisions (mDNS discovery was dropped there as likely never needed).
 
 ## Box internals
 

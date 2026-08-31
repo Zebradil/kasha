@@ -22,21 +22,39 @@
             pkgs = nixpkgs.legacyPackages.${system};
           }
         );
-      mkKasha =
-        rustPlatform:
-        rustPlatform.buildRustPackage {
-          pname = "kasha";
-          version = (lib.importTOML ./Cargo.toml).package.version;
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./src
-            ];
-          };
-          cargoLock.lockFile = ./Cargo.lock;
+      # Shared by the package build and the lint checks below, so both draw the
+      # same vendored, network-free cargo registry from one place.
+      commonCargoArgs = {
+        version = (lib.importTOML ./Cargo.toml).package.version;
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./src
+          ];
         };
+        cargoLock.lockFile = ./Cargo.lock;
+      };
+      mkKasha = rustPlatform: rustPlatform.buildRustPackage (commonCargoArgs // { pname = "kasha"; });
+      # A lint check as a buildRustPackage derivation, not a plain runCommand: that's
+      # what gets the vendored offline registry cargoSetupHook already sets up for the
+      # package build, for free, instead of duplicating the vendoring by hand.
+      mkCargoLintCheck =
+        pkgs: name: command:
+        pkgs.rustPlatform.buildRustPackage (
+          commonCargoArgs
+          // {
+            pname = "kasha-${name}";
+            nativeBuildInputs = [
+              pkgs.clippy
+              pkgs.rustfmt
+            ];
+            buildPhase = command;
+            doCheck = false;
+            installPhase = "mkdir -p $out";
+          }
+        );
     in
     {
       nixosModules = {
@@ -122,6 +140,9 @@
 
           # writeShellApplication shellchecks the script in its build.
           kasha-cache-push = self.packages.${system}.kasha-cache-push;
+
+          fmt = mkCargoLintCheck pkgs "fmt" "cargo fmt --all -- --check";
+          clippy = mkCargoLintCheck pkgs "clippy" "cargo clippy --all-targets --all-features -- -D warnings";
 
           actionlint =
             pkgs.runCommand "actionlint"

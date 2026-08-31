@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@v1
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@v0.1.0
         with:
           # kasha's own remote cache, read side. Plain public S3 reads, so
           # this works for fork pull requests too — `vars` are exposed to
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@v1
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@v0.1.0
         with:
           extra-substituters: ${{ vars.KASHA_CACHE_URL }}
           extra-trusted-public-keys: ${{ vars.KASHA_CI_PUBLIC_KEY }}
@@ -52,7 +52,7 @@ jobs:
           signing-key: ${{ github.event_name == 'push' && secrets.KASHA_CI_SIGNING_KEY || '' }}
 
       - id: build
-        uses: zebradil/nix-ci/.github/actions/build@v1
+        uses: zebradil/nix-ci/.github/actions/build@v0.1.0
         with:
           attr: checks.x86_64-linux
           cache-s3-url: ${{ github.event_name == 'push' && secrets.KASHA_REMOTE || '' }}

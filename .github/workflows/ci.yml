@@ -59,7 +59,7 @@ jobs:
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
 
-      # A local relative path, not zebradil/kasha/.github/actions/emit-manifest@v1:
+      # A local relative path, not zebradil/kasha/.github/actions/emit-manifest@<version>:
       # this is kasha testing its own manifest action against the commit under
       # test, and pinning a tag here would make every merge to main depend on
       # a release that doesn't exist at merge time.

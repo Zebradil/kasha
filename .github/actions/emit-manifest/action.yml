@@ -8,8 +8,9 @@ description: >
 
   The `kasha` binary that builds the manifest is resolved from `github.action_path` — the
   checkout of THIS action's own repo that GitHub Actions creates when a workflow references
-  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Building the flake at the root of that checkout therefore
-  always uses exactly the kasha version the caller pinned via `<ref>` (a tag, branch or SHA),
+  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Building the flake at the root of that
+  checkout therefore always uses exactly the kasha version the caller pinned via `<ref>`
+  (a tag, branch or SHA),
   with no separate ref input and no floating `github:Zebradil/kasha` fallback to go stale or
   drift from the manifest format this same commit defines.
 

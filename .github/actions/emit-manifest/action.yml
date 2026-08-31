@@ -8,7 +8,7 @@ description: >
 
   The `kasha` binary that builds the manifest is resolved from `github.action_path` — the
   checkout of THIS action's own repo that GitHub Actions creates when a workflow references
-  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Building `<action_path>#kasha` therefore
+  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Building the flake at the root of that checkout therefore
   always uses exactly the kasha version the caller pinned via `<ref>` (a tag, branch or SHA),
   with no separate ref input and no floating `github:Zebradil/kasha` fallback to go stale or
   drift from the manifest format this same commit defines.
@@ -119,7 +119,12 @@ runs:
         # path below. --no-write-lock-file: this checkout is GitHub's cache of
         # the action's own repo, not a workspace this job owns: never mutate it,
         # even though flake.lock is already committed and current.
-        out="$(nix build --no-link --no-write-lock-file --print-out-paths "$GITHUB_ACTION_PATH#kasha^out")"
+        # GITHUB_ACTION_PATH points at this action's own directory inside the
+        # checkout, not at the repository root, so walk up to where flake.nix
+        # lives. `path:` keeps it a plain directory flakeref: the checkout has
+        # no .git, and a bare path would be resolved as a git tree and fail.
+        root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        out="$(nix build --no-link --no-write-lock-file --print-out-paths "path:$root#kasha^out")"
         echo "bin=$out/bin/kasha" >> "$GITHUB_OUTPUT"
 
     - name: Emit and publish manifest

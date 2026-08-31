@@ -120,10 +120,13 @@ runs:
         # path below. --no-write-lock-file: this checkout is GitHub's cache of
         # the action's own repo, not a workspace this job owns: never mutate it,
         # even though flake.lock is already committed and current.
-        # GITHUB_ACTION_PATH points at this action's own directory inside the
-        # checkout, not at the repository root, so walk up to where flake.nix
-        # lives. `path:` keeps it a plain directory flakeref: the checkout has
-        # no .git, and a bare path would be resolved as a git tree and fail.
+        # GITHUB_ACTION_PATH points at this action's own directory, not at the
+        # repository root, so walk up the three levels of `.github/actions/<name>`
+        # to where flake.nix lives. That depth is the same whether this action
+        # was referenced by tag (GitHub's _actions checkout) or by local path
+        # (the workspace itself). `path:` keeps it a plain directory flakeref,
+        # so the tagged case — a checkout carrying no .git — does not get
+        # resolved as a git tree and fail.
         root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
         out="$(nix build --no-link --no-write-lock-file --print-out-paths "path:$root#kasha^out")"
         echo "bin=$out/bin/kasha" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,154 @@
+name: Emit kasha manifest
+description: >
+  Publish a kasha v3 generation manifest for a closure the caller has ALREADY signed and pushed
+  to the binary cache (e.g. via `nix-fast-build --copy-to` with signing wired through nix.conf
+  `secret-key-files`). This action does not sign or push store paths — a NAR sitting in the
+  remote cache without a `roots/<flake>/<gen>.json` manifest is invisible to a kasha box's
+  mirror-down, so this is the step that actually makes a push visible.
+
+  The `kasha` binary that builds the manifest is resolved from `github.action_path` — the
+  checkout of THIS action's own repo that GitHub Actions creates when a workflow references
+  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Building the flake at the root of that
+  checkout therefore always uses exactly the kasha version the caller pinned via `<ref>`
+  (a tag, branch or SHA),
+  with no separate ref input and no floating `github:Zebradil/kasha` fallback to go stale or
+  drift from the manifest format this same commit defines.
+
+  Every run rebuilds the small Rust binary from source rather than substituting a previously
+  published build: doing so would need either an unsigned (untrusted) narinfo push or a signing
+  key this action deliberately does not take as an input, for a saving of roughly a minute on a
+  small crate. Callers running this action many times in one workflow (e.g. a build matrix) pay
+  that cost once per job; Nix's own store cache absorbs repeats within a job for free.
+
+inputs:
+  flake:
+    description: >
+      kasha flake id the manifest is filed under (roots/<flake>/<gen>.json). Identifies the
+      producer flake to readers of the cache, not this action's own flake.
+    required: true
+  paths-file:
+    description: >
+      Path to a file of newline-separated Nix store paths — the closure that was already pushed
+      to the cache. A file, not an inline list: closures reach thousands of paths and would
+      overflow step env / argument limits passed inline. Blank lines are ignored; `kasha emit`
+      sorts and dedups the list itself.
+    required: true
+  attr:
+    description: >
+      Flake attr the generation was built from (e.g. checks.x86_64-linux.foo-build). Recorded on
+      the manifest as the retention group within `branch`, and folded into the default `gen` id.
+    required: true
+  branch:
+    description: >
+      Branch the generation was built from; drives the box's retention tier (kasha keeps `main`
+      longer than other branches). Defaults to GITHUB_REF_NAME, sanitized to the character set
+      kasha's gen ids require.
+    required: false
+    default: ''
+  gen:
+    description: >
+      Generation id for the manifest (roots/<flake>/<gen>.json). Defaults to
+      `<branch>-<short sha>-<attr>`, sanitized the same way, so callers get a working default and
+      only need to override it for something like a fan-out over multiple attrs in one job.
+    required: false
+    default: ''
+  s3-url:
+    description: >
+      S3 URL the manifest JSON is PUT to (e.g. s3://my-cache-bucket or
+      s3://my-bucket?region=eu-central-1). This is `kasha emit --to`, independent of wherever the
+      caller pushed the actual store paths — they must be the same cache for the manifest to mean
+      anything, but this action does not verify that.
+    required: true
+  aws-access-key-id:
+    description: AWS access key ID for the S3 PUT of the manifest.
+    required: true
+  aws-secret-access-key:
+    description: AWS secret access key for the S3 PUT of the manifest.
+    required: true
+
+outputs:
+  gen:
+    description: The generation id actually used (the input, or the resolved default).
+    value: ${{ steps.provenance.outputs.gen }}
+  branch:
+    description: The branch actually used (the input, or the resolved default).
+    value: ${{ steps.provenance.outputs.branch }}
+  manifest-key:
+    description: The object key the manifest was published under (roots/<flake>/<gen>.json).
+    value: ${{ steps.provenance.outputs.manifest-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve manifest provenance
+      id: provenance
+      shell: bash
+      env:
+        BRANCH_IN: ${{ inputs.branch }}
+        GEN_IN: ${{ inputs.gen }}
+        FLAKE: ${{ inputs.flake }}
+        ATTR: ${{ inputs.attr }}
+      run: |
+        set -euo pipefail
+        # Same sanitization kasha's gen/branch fields require everywhere else
+        # (see znix's resolve-kasha-emitter.sh, and cache-push.sh's own
+        # `sanitize`): strip anything that would break a `roots/<flake>/<gen>.json`
+        # object key or kasha's retention-tier branch matching.
+        sanitize() { printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '-'; }
+
+        branch="$BRANCH_IN"
+        [[ -z "$branch" ]] && branch="$(sanitize "$GITHUB_REF_NAME")"
+
+        gen="$GEN_IN"
+        # GITHUB_SHA is the full 40-char commit SHA; 7 chars matches the
+        # `git rev-parse --short` length the equivalent znix code used.
+        [[ -z "$gen" ]] && gen="${branch}-${GITHUB_SHA:0:7}-$(sanitize "$ATTR")"
+
+        {
+          echo "branch=$branch"
+          echo "gen=$gen"
+          echo "manifest-key=roots/${FLAKE}/${gen}.json"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Build kasha
+      id: kasha
+      shell: bash
+      run: |
+        set -euo pipefail
+        # `^out` pins the single output: --print-out-paths emits one line per
+        # output, and a multi-line $out would silently produce a broken bin
+        # path below. --no-write-lock-file: this checkout is GitHub's cache of
+        # the action's own repo, not a workspace this job owns: never mutate it,
+        # even though flake.lock is already committed and current.
+        # GITHUB_ACTION_PATH points at this action's own directory, not at the
+        # repository root, so walk up the three levels of `.github/actions/<name>`
+        # to where flake.nix lives. That depth is the same whether this action
+        # was referenced by tag (GitHub's _actions checkout) or by local path
+        # (the workspace itself). `path:` keeps it a plain directory flakeref,
+        # so the tagged case — a checkout carrying no .git — does not get
+        # resolved as a git tree and fail.
+        root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        out="$(nix build --no-link --no-write-lock-file --print-out-paths "path:$root#kasha^out")"
+        echo "bin=$out/bin/kasha" >> "$GITHUB_OUTPUT"
+
+    - name: Emit and publish manifest
+      shell: bash
+      env:
+        KASHA_BIN: ${{ steps.kasha.outputs.bin }}
+        FLAKE: ${{ inputs.flake }}
+        GEN: ${{ steps.provenance.outputs.gen }}
+        BRANCH: ${{ steps.provenance.outputs.branch }}
+        ATTR: ${{ inputs.attr }}
+        S3_URL: ${{ inputs.s3-url }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.aws-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
+        PATHS_FILE: ${{ inputs.paths-file }}
+      run: |
+        set -euo pipefail
+        # `kasha emit` trims, filters blank lines, sorts and dedups the closure
+        # itself, and validates the manifest (non-empty fields, every path
+        # under /nix/store) before publishing — no pre-processing needed here.
+        "$KASHA_BIN" emit \
+          --flake "$FLAKE" --gen "$GEN" --branch "$BRANCH" --attr "$ATTR" \
+          --to "$S3_URL" \
+          < "$PATHS_FILE"

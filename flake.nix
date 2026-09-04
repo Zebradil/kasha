@@ -68,6 +68,21 @@
           kasha = mkKasha pkgs.rustPlatform;
           default = self.packages.${system}.kasha;
 
+          # The binary this flake publishes to its cache for `system`, and the
+          # one consumers should substitute rather than rebuild. Linux resolves
+          # to the musl static build, because that is what the OCI image ships —
+          # musl's stub resolver and lack of NSS are exactly the differences a
+          # glibc build would hide. Darwin has no static build and uses the
+          # native one, which is the producer path there anyway.
+          #
+          # One attr name that is correct on every system, so a consumer (the
+          # emit-manifest action below) can ask for it without knowing which
+          # flavour its runner needs. Named here rather than inlined at each use
+          # so CI pushes and consumers resolve the same derivation by
+          # construction: a second copy of this expression could drift, and the
+          # symptom would be a silent full rebuild on every consumer run.
+          kasha-bin = self.packages.${system}.kasha-static or self.packages.${system}.kasha;
+
           # The resolve -> sign -> push core every producer runs. Shipped here
           # so a fix reaches producers through the same flake input that pins
           # `kasha emit`, which this script calls to publish the manifest.
@@ -128,11 +143,9 @@
       checks = forAllSystems (
         { system, pkgs }:
         let
-          # Linux checks run against the musl static build, because that is the
-          # binary the OCI image ships — musl's stub resolver and lack of NSS
-          # are exactly the differences a glibc build would hide. Darwin has no
-          # static build and tests the native one, which is the producer path.
-          tested = self.packages.${system}.kasha-static or self.packages.${system}.kasha;
+          # Test exactly the artefact the cache serves, never a sibling build of
+          # the same source.
+          tested = self.packages.${system}.kasha-bin;
         in
         {
           # cargo test runs in the package's checkPhase.

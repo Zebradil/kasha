@@ -8,17 +8,21 @@ description: >
 
   The `kasha` binary that builds the manifest is resolved from `github.action_path` — the
   checkout of THIS action's own repo that GitHub Actions creates when a workflow references
-  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Building the flake at the root of that
-  checkout therefore always uses exactly the kasha version the caller pinned via `<ref>`
-  (a tag, branch or SHA),
+  `zebradil/kasha/.github/actions/emit-manifest@<ref>`. Resolving `kasha-bin` from the flake at
+  the root of that checkout therefore always uses exactly the kasha version the caller pinned via
+  `<ref>` (a tag, branch or SHA),
   with no separate ref input and no floating `github:Zebradil/kasha` fallback to go stale or
   drift from the manifest format this same commit defines.
 
-  Every run rebuilds the small Rust binary from source rather than substituting a previously
-  published build: doing so would need either an unsigned (untrusted) narinfo push or a signing
-  key this action deliberately does not take as an input, for a saving of roughly a minute on a
-  small crate. Callers running this action many times in one workflow (e.g. a build matrix) pay
-  that cost once per job; Nix's own store cache absorbs repeats within a job for free.
+  The binary is substituted from kasha's own cache when the pinned ref has a published build for
+  the runner's system, and built from source otherwise. The substituter and its key default to
+  that cache, so a caller needs no cache configuration of its own and does not have to trust
+  kasha's signing key in its own nix.conf.
+
+  A miss costs far more than the crate suggests: kasha pins its own nixpkgs, so a caller's warm
+  store shares no toolchain with it and the fallback drags a second rustc closure onto the runner.
+  Misses are worth avoiding rather than tolerating, which is what ci.yml's publish matrix and the
+  release generations exist for.
 
 inputs:
   flake:
@@ -65,6 +69,17 @@ inputs:
   aws-secret-access-key:
     description: AWS secret access key for the S3 PUT of the manifest.
     required: true
+  extra-substituters:
+    description: >
+      Substituters to resolve the kasha binary from, defaulting to kasha's own cache. Applied to
+      this action's build step only, never to the caller's builds. Set empty to force a build from
+      source.
+    required: false
+    default: https://znix.zebradil.dev
+  extra-trusted-public-keys:
+    description: Public keys matching `extra-substituters`. Defaults to kasha's CI signing key.
+    required: false
+    default: kasha-ci-1:KNW/sz+Zz800U/IFZ38vH5rvlHtM3Fb0Q/wmDJquG+U=
 
 outputs:
   gen:
@@ -113,8 +128,22 @@ runs:
     - name: Build kasha
       id: kasha
       shell: bash
+      env:
+        # nix.conf additions scoped to this step, so the caller's own
+        # substituters and trusted keys are untouched. These are daemon-enforced
+        # settings and take effect only where the runner's user is in
+        # `trusted-users`; where it is not, Nix logs `ignoring untrusted
+        # substituter` and builds from source, which is what would have happened
+        # without them anyway. Never a hard failure.
+        NIX_CONFIG: |
+          extra-substituters = ${{ inputs.extra-substituters }}
+          extra-trusted-public-keys = ${{ inputs.extra-trusted-public-keys }}
       run: |
         set -euo pipefail
+        # `kasha-bin` rather than `kasha`: it resolves to whichever flavour this
+        # system publishes (musl static on Linux, native on Darwin), so this
+        # asks for the exact derivation ci.yml pushed instead of a sibling build
+        # of the same source that nothing has ever cached.
         # `^out` pins the single output: --print-out-paths emits one line per
         # output, and a multi-line $out would silently produce a broken bin
         # path below. --no-write-lock-file: this checkout is GitHub's cache of
@@ -128,7 +157,7 @@ runs:
         # so the tagged case — a checkout carrying no .git — does not get
         # resolved as a git tree and fail.
         root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
-        out="$(nix build --no-link --no-write-lock-file --print-out-paths "path:$root#kasha^out")"
+        out="$(nix build --no-link --no-write-lock-file --print-out-paths "path:$root#kasha-bin^out")"
         echo "bin=$out/bin/kasha" >> "$GITHUB_OUTPUT"
 
     - name: Emit and publish manifest

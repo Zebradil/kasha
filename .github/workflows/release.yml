@@ -1,0 +1,48 @@
+name: Release
+
+# release-please maintains a release PR from Conventional Commits; merging it bumps the version in
+# Cargo.toml (and so the version flake.nix reads from it) and tags an exact semver release.
+# Consumers pin `emit-manifest@<sha> # vX.Y.Z` and let Renovate resolve the tag to a SHA, so no
+# floating major tag exists to silently change what a pinned workflow runs.
+#
+# Cutting the release is only half the job: the tagged closure must also reach the cache under a
+# generation named for the tag, or the pin decays into a full rebuild once five newer main builds
+# have landed. That is the `publish` job below.
+
+on:
+  push:
+    branches: [main]
+  # release-please only compares an open release PR's title and body, so it will not pick up a
+  # config change on its own. Closing the PR and dispatching this rebuilds it.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release-created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # The release commit's own push already published this closure under `main`; this republishes the
+  # identical store paths under a generation named for the tag, which is the one kasha's retention
+  # keeps indefinitely. The build is therefore a cache hit in the normal case — and correct, not
+  # merely cheap, if it races the main run and rebuilds: both legs push the same paths.
+  publish:
+    needs: release
+    if: ${{ needs.release.outputs.release-created == 'true' }}
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+    with:
+      manifest-branch: ${{ needs.release.outputs.tag }}

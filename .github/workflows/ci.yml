@@ -34,6 +34,25 @@ on:
 permissions:
   contents: read
 
+env:
+  # Push from same-repo branches as well as main, so a PR's build is not thrown away and paid for
+  # again on merge. That is worth more here than the usual "publish from main only" because kasha's
+  # `src` is a fileset of Cargo.toml, Cargo.lock and src/ — the derivation depends on file contents,
+  # not on the commit — so a PR build's paths are bit-identical to the ones main needs afterwards.
+  #
+  # Fork pull requests are excluded: they cannot read `secrets` at all, so they would fail at the
+  # push rather than skip it. Same-repo branches can push signed paths, which is a real trust
+  # boundary — a branch can only ever add new input-addressed paths, never replace an existing
+  # one's content, but a PR editing this workflow runs the edited version and could exfiltrate the
+  # signing key. That is the same trust boundary as merge access, and it is the reason this is not
+  # simply `true`.
+  #
+  # `github.event.pull_request` is null outside pull_request events, so the comparison alone would
+  # evaluate false on push and silently stop main from publishing. Hence the event check first.
+  PUSH_TO_CACHE: >-
+    ${{ github.event_name != 'pull_request'
+        || github.event.pull_request.head.repo.full_name == github.repository }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -79,10 +98,7 @@ jobs:
         with:
           extra-substituters: ${{ vars.KASHA_CACHE_URL }}
           extra-trusted-public-keys: ${{ vars.KASHA_CI_PUBLIC_KEY }}
-          # Push only from main: the write credentials and the signing key
-          # stay off branch builds, and main already primes the cache for the
-          # next PR.
-          signing-key: ${{ github.event_name == 'push' && secrets.KASHA_CI_SIGNING_KEY || '' }}
+          signing-key: ${{ env.PUSH_TO_CACHE == 'true' && secrets.KASHA_CI_SIGNING_KEY || '' }}
 
       - id: build
         uses: zebradil/nix-ci/.github/actions/build@04cd06d6dc934270866604c5af67772c62637bee # v1.0.2
@@ -92,9 +108,25 @@ jobs:
           # it — no separate push step, and no way for the tested artefact and the
           # served one to drift apart.
           attr: checks.${{ matrix.system }}
-          cache-s3-url: ${{ github.event_name == 'push' && secrets.KASHA_REMOTE || '' }}
+          cache-s3-url: ${{ env.PUSH_TO_CACHE == 'true' && secrets.KASHA_REMOTE || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
+
+      - name: Check for pushed paths
+        id: pushed
+        # always(): a partially failed build still pushed what it finished, and those paths need a
+        # manifest or the nightly sweep takes them past the 24h grace. The output is empty when
+        # nothing was published at all — a fork pull request, where the push step never runs — and
+        # names an empty file when every attr failed to build. `kasha emit` rejects an empty
+        # closure, so gate on file size rather than let the emit below fail for a case that is not
+        # an error.
+        if: ${{ always() && steps.build.outputs.paths-file != '' }}
+        env:
+          PATHS_FILE: ${{ steps.build.outputs.paths-file }}
+        run: |
+          if [[ -s "$PATHS_FILE" ]]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # A local relative path, not zebradil/kasha/.github/actions/emit-manifest@<version>:
       # this is kasha testing its own manifest action against the commit under
@@ -106,7 +138,7 @@ jobs:
       # makes the push above count. Best-effort like the push itself: a
       # broken cache must slow CI down, never fail it.
       - name: Publish kasha manifest
-        if: github.event_name == 'push'
+        if: ${{ always() && steps.pushed.outputs.any == 'true' }}
         continue-on-error: true
         uses: ./.github/actions/emit-manifest
         with:

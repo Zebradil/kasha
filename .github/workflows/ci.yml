@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@04cd06d6dc934270866604c5af67772c62637bee # v1.0.2
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@97a2729c1f60ab655cff974c9e861916e9b03712 # v1.1.0
         with:
           # kasha's own remote cache, read side. Plain public S3 reads, so
           # this works for fork pull requests too — `vars` are exposed to
@@ -94,14 +94,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@04cd06d6dc934270866604c5af67772c62637bee # v1.0.2
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@97a2729c1f60ab655cff974c9e861916e9b03712 # v1.1.0
         with:
           extra-substituters: ${{ vars.KASHA_CACHE_URL }}
           extra-trusted-public-keys: ${{ vars.KASHA_CI_PUBLIC_KEY }}
           signing-key: ${{ env.PUSH_TO_CACHE == 'true' && secrets.KASHA_CI_SIGNING_KEY || '' }}
 
       - id: build
-        uses: zebradil/nix-ci/.github/actions/build@04cd06d6dc934270866604c5af67772c62637bee # v1.0.2
+        uses: zebradil/nix-ci/.github/actions/build@97a2729c1f60ab655cff974c9e861916e9b03712 # v1.1.0
         with:
           # checks.<system>.build is packages.<system>.kasha-bin, so building the
           # check set publishes the consumable binary as a side effect of testing

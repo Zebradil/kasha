@@ -108,7 +108,7 @@ jobs:
           # it — no separate push step, and no way for the tested artefact and the
           # served one to drift apart.
           attr: checks.${{ matrix.system }}
-          cache-s3-url: ${{ env.PUSH_TO_CACHE == 'true' && secrets.KASHA_REMOTE || '' }}
+          cache-s3-url: ${{ env.PUSH_TO_CACHE == 'true' && vars.CACHE_S3_URL || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
 
@@ -151,6 +151,6 @@ jobs:
           # Empty on push and pull_request, where emit-manifest falls back to the
           # ref name. Set only by release.yml.
           branch: ${{ inputs.manifest-branch }}
-          s3-url: ${{ secrets.KASHA_REMOTE }}
+          s3-url: ${{ vars.CACHE_S3_URL }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}

@@ -12,6 +12,12 @@ set -euo pipefail
 # inputs are empty, so a key-less or credential-less run is a no-op for that
 # step):
 #   CACHE_S3_URL              s3:// URL for `nix copy --to`     (skip push when empty)
+#   CACHE_STORE_PARAMS        store settings appended to that URL as query parameters, unless
+#                             it names a `compression` itself. Defaults to
+#                             compression=zstd&compression-level=6 — zstd restores several times
+#                             faster than Nix's xz default on every machine that substitutes from
+#                             the cache, and decompression speed is the same at every zstd level,
+#                             so a higher one would only cost push time.
 #   CACHE_SIGNING_KEY_FILE    key file for `nix store sign`     (skip signing when empty)
 #   AWS_ACCESS_KEY_ID
 #   AWS_SECRET_ACCESS_KEY     S3 credentials                    (skip push when empty)
@@ -129,8 +135,20 @@ elif [[ "$CACHE_S3_URL" == http://* || "$CACHE_S3_URL" == https://* ]]; then
 elif [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
   echo "::warning::Remote cache push skipped — AWS credentials are not set." >&2
 else
-  echo "Pushing ${#store_paths[@]} path(s) to ${CACHE_S3_URL}…"
-  nix copy --to "$CACHE_S3_URL" "${store_paths[@]}"
+  # `compression` is a BinaryCacheStore setting, so it travels only as a URL query parameter —
+  # `--option compression zstd` is silently ignored. Applied to the push URL alone: `kasha emit`
+  # below takes the plain URL, since store settings mean nothing to a manifest PUT.
+  push_url="$CACHE_S3_URL"
+  store_params="${CACHE_STORE_PARAMS-compression=zstd&compression-level=6}"
+  if [[ -n "$store_params" ]]; then
+    case "$push_url" in
+      *compression=*) ;;
+      *\?*) push_url="$push_url&$store_params" ;;
+      *) push_url="$push_url?$store_params" ;;
+    esac
+  fi
+  echo "Pushing ${#store_paths[@]} path(s) to ${push_url}…"
+  nix copy --to "$push_url" "${store_paths[@]}"
   pushed=1
 fi
 

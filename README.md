@@ -99,6 +99,11 @@ KASHA_FLAKE=znix KASHA_BIN="$(nix build --no-link --print-out-paths .#kasha)/bin
 Every step is skipped when its inputs are empty, so a key-less or credential-less run is a dry no-op. See
 `scripts/cache-push.sh` for the full environment contract.
 
+The push URL picks up `compression=zstd&compression-level=6` unless it names a `compression` itself (override with
+`CACHE_STORE_PARAMS`). Nix's xz default costs every substituting machine several times the decompression time, on one
+core, and decompression speed is identical at every zstd level — so a higher level would only slow the push down. Old xz
+NARs keep working alongside: each narinfo carries its own `Compression`.
+
 ## Push from a client
 
 Sign locally, then plain `nix copy` with netrc auth (any login, password = `KASHA_TOKEN`):

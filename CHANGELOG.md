@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Zebradil/kasha/compare/v0.3.1...v0.4.0) (2026-09-14)
+
+
+### Features
+
+* name signer keys when rejecting a narinfo ([f0be64a](https://github.com/Zebradil/kasha/commit/f0be64a19740bbe37e2f109bce4ef046af219947))
+
 ## [0.3.1](https://github.com/Zebradil/kasha/compare/v0.3.0...v0.3.1) (2026-09-14)
 
 

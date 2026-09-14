@@ -408,6 +408,7 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeRemote {
         pub objects: Mutex<BTreeMap<String, (Vec<u8>, SystemTime)>>,
+        gets: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeRemote {
@@ -423,6 +424,10 @@ pub mod fake {
         pub fn keys(&self) -> Vec<String> {
             self.objects.lock().unwrap().keys().cloned().collect()
         }
+        /// GET round trips so far (streams included).
+        pub fn gets(&self) -> usize {
+            self.gets.load(std::sync::atomic::Ordering::Relaxed)
+        }
     }
 
     impl Remote for FakeRemote {
@@ -437,6 +442,7 @@ pub mod fake {
                 .collect())
         }
         fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(self
                 .objects
                 .lock()

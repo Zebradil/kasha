@@ -10,8 +10,10 @@
 //! published last, then the gen is marked mirrored (GC guard lifts).
 
 use anyhow::{Context, Result};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
+use std::time::{Duration, Instant};
 
 use crate::manifest::Manifest;
 use crate::narinfo::{NarInfo, PubKey, store_hash_of};
@@ -25,7 +27,14 @@ pub struct Mirror<'a> {
     pub upstreams: Vec<String>,
     pub keys: &'a [PubKey],
     pub agent: ureq::Agent,
+    /// Store hashes no source could supply, with when that was learned.
+    /// Most gaps are permanent (unsigned `.drv`s) and shared by many
+    /// manifests, so each is retried once per `MISS_RETRY` rather than once
+    /// per manifest per cycle. Keep one `Mirror` across cycles.
+    pub misses: RefCell<HashMap<String, Instant>>,
 }
+
+const MISS_RETRY: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, Default, PartialEq)]
 pub struct DownReport {
@@ -66,34 +75,47 @@ impl Mirror<'_> {
         }
 
         // Deletions: reflect remote retention, guard unmirrored local pushes.
-        for (path, m) in self.store.manifests()? {
-            if remote_keys.contains(manifest_key(&m.flake, &m.gen_id).as_str()) {
+        for (flake, gen_id, path) in self.store.manifest_files()? {
+            if remote_keys.contains(manifest_key(&flake, &gen_id).as_str()) {
                 continue;
             }
-            if self.store.is_local_origin(&m.flake, &m.gen_id)
-                && !self.store.is_mirrored(&m.flake, &m.gen_id)
+            if self.store.is_local_origin(&flake, &gen_id)
+                && !self.store.is_mirrored(&flake, &gen_id)
             {
                 continue; // box may hold the only copy
             }
             tracing::info!(path = %path.display(), "manifest gone remotely, dropping");
-            self.store.remove_manifest(&m.flake, &m.gen_id)?;
+            self.store.remove_manifest(&flake, &gen_id)?;
         }
 
-        // Gap fill: fetch what exists, count what doesn't.
+        // Gap fill: fetch what exists, count what doesn't. A fetched path
+        // enters the index, so later manifests no longer list it as a gap.
+        let mut misses = self.misses.borrow_mut();
+        misses.retain(|_, t| t.elapsed() < MISS_RETRY);
         let mut report = DownReport::default();
-        for (_, m) in self.store.manifests()? {
+        for (flake, _, path) in self.store.manifest_files()? {
+            let Some(m) = self.store.load_manifest(&path)? else {
+                continue;
+            };
             let mut unresolved = 0;
             for path in self.store.gaps(&m) {
-                match self.fetch_path(&path) {
-                    Ok(true) => report.fetched_paths += 1,
-                    Ok(false) => unresolved += 1,
-                    Err(e) => {
-                        tracing::warn!(path, error = %e, "fetch failed");
-                        unresolved += 1;
-                    }
+                let hash = store_hash_of(&path);
+                if misses.contains_key(hash) {
+                    unresolved += 1;
+                    continue;
                 }
+                match self.fetch_path(&path) {
+                    Ok(true) => {
+                        report.fetched_paths += 1;
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(path, error = %e, "fetch failed"),
+                }
+                misses.insert(hash.to_string(), Instant::now());
+                unresolved += 1;
             }
-            *report.gaps.entry(m.flake.clone()).or_default() += unresolved;
+            *report.gaps.entry(flake).or_default() += unresolved;
         }
         Ok(report)
     }
@@ -152,12 +174,15 @@ impl Mirror<'_> {
     /// Returns the number of still-pending local-origin generations.
     pub fn up(&self) -> Result<usize> {
         let mut pending = 0;
-        for (_, m) in self.store.manifests()? {
-            if !self.store.is_local_origin(&m.flake, &m.gen_id)
-                || self.store.is_mirrored(&m.flake, &m.gen_id)
+        for (flake, gen_id, path) in self.store.manifest_files()? {
+            if !self.store.is_local_origin(&flake, &gen_id)
+                || self.store.is_mirrored(&flake, &gen_id)
             {
                 continue;
             }
+            let Some(m) = self.store.load_manifest(&path)? else {
+                continue;
+            };
             match self.push_gen(&m) {
                 Ok(()) => {}
                 Err(e) => {
@@ -319,6 +344,7 @@ References: \n"
             upstreams: vec![],
             keys,
             agent: ureq::Agent::new_with_defaults(),
+            misses: Default::default(),
         }
     }
 
@@ -355,7 +381,18 @@ References: \n"
         assert_eq!(report.fetched_paths, 0);
         assert_eq!(report.gaps["znix"], 1);
 
-        // The missing object appears later: gap fills.
+        // A path shared by a second manifest is not re-fetched in the cycle.
+        remote.insert(
+            "roots/znix/main-2-x.json",
+            &manifest("main-2-x", "main", &[missing]),
+        );
+        let gets = remote.gets();
+        let report = m.down().unwrap();
+        assert_eq!(report.gaps["znix"], 2);
+        assert_eq!(remote.gets() - gets, 1); // the new manifest only
+
+        // The missing object appears later: gap fills once the miss expires.
+        m.misses.borrow_mut().clear();
         let (hb, ib, nb) = object(&sk, 'b', "pkg-b");
         remote.insert(&format!("{hb}.narinfo"), ib.as_bytes());
         remote.insert(&format!("nar/{hb}.nar.xz"), &nb);
@@ -390,7 +427,7 @@ References: \n"
         // Remote sweep removes the manifest: local copy follows.
         remote.delete("roots/znix/main-1-x.json").unwrap();
         m.down().unwrap();
-        assert_eq!(store.manifests().unwrap().len(), 0);
+        assert_eq!(store.manifest_files().unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -415,7 +452,7 @@ References: \n"
         // Not on the remote at all — down() must keep it.
         let m = mirror(&store, &remote, &keys);
         m.down().unwrap();
-        assert_eq!(store.manifests().unwrap().len(), 1);
+        assert_eq!(store.manifest_files().unwrap().len(), 1);
 
         // up() publishes nar, narinfo, then manifest; marks mirrored.
         let pending = m.up().unwrap();
@@ -433,7 +470,7 @@ References: \n"
         // Now that it is mirrored, a later remote deletion is honored.
         remote.delete("roots/znix/local-1-x.json").unwrap();
         m.down().unwrap();
-        assert_eq!(store.manifests().unwrap().len(), 0);
+        assert_eq!(store.manifest_files().unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -502,6 +539,7 @@ References: \n"
             upstreams: vec![base],
             keys: &keys,
             agent: ureq::Agent::new_with_defaults(),
+            misses: Default::default(),
         };
         let report = m.down().unwrap();
         assert_eq!(report.fetched_paths, 1);

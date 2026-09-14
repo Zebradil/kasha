@@ -122,29 +122,44 @@ impl Store {
         write_atomic(&path, |f| f.write_all(raw))
     }
 
-    /// All parseable v3 manifests under `roots/`, with their file paths.
-    pub fn manifests(&self) -> Result<Vec<(PathBuf, Manifest)>> {
+    /// Manifest files under `roots/` as `(flake, gen, path)`, unparsed.
+    /// Callers load one at a time: every closure at once is hundreds of MiB.
+    pub fn manifest_files(&self) -> Result<Vec<(String, String, PathBuf)>> {
         let mut out = Vec::new();
-        let roots = self.root.join("roots");
-        for flake in fs::read_dir(&roots)? {
+        for flake in fs::read_dir(self.root.join("roots"))? {
             let flake = flake?;
             if !flake.file_type()?.is_dir() {
                 continue;
             }
+            let Some(flake_name) = flake.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
             for f in fs::read_dir(flake.path())? {
-                let path = f?.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                let f = f?;
+                let name = f.file_name();
+                // Dot-files are `write_atomic` temps, not manifests.
+                let Some(gen_id) = name
+                    .to_str()
+                    .filter(|n| !n.starts_with('.'))
+                    .and_then(|n| n.strip_suffix(".json"))
+                else {
                     continue;
-                }
-                match Manifest::parse(&fs::read(&path)?) {
-                    Ok(m) => out.push((path, m)),
-                    Err(e) => {
-                        tracing::warn!(path = %path.display(), error = %e, "skipping bad manifest")
-                    }
-                }
+                };
+                out.push((flake_name.clone(), gen_id.to_string(), f.path()));
             }
         }
         Ok(out)
+    }
+
+    /// Parse one manifest file; `None` (logged) when it is not valid v3.
+    pub fn load_manifest(&self, path: &Path) -> Result<Option<Manifest>> {
+        match Manifest::parse(&fs::read(path)?) {
+            Ok(m) => Ok(Some(m)),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "skipping bad manifest");
+                Ok(None)
+            }
+        }
     }
 
     /// Missing closure paths of a manifest (by narinfo presence in the index).
@@ -171,8 +186,9 @@ impl Store {
             .ok()
     }
 
-    /// Stamp a sweep attempt — outcome-independent, so a failing sweep keeps
-    /// the cadence instead of retrying without pause.
+    /// Stamp a sweep attempt. Call before sweeping: a sweep that fails or is
+    /// killed mid-way (OOM) then keeps the cadence instead of rerunning on
+    /// every restart.
     pub fn record_sweep(&self) -> Result<()> {
         fs::write(self.sweep_stamp(), b"")?;
         Ok(())
@@ -414,7 +430,18 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         };
         s.put_manifest(&m, &serde_json::to_vec(&m).unwrap())
             .unwrap();
-        assert_eq!(s.manifests().unwrap().len(), 1);
+        // A leftover temp file is not a manifest.
+        fs::write(root.join("roots/znix/.tmp-1-main-abc-x.json"), b"{").unwrap();
+        let files = s.manifest_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            (files[0].0.as_str(), files[0].1.as_str()),
+            ("znix", "main-abc-x")
+        );
+        assert_eq!(
+            s.load_manifest(&files[0].2).unwrap().unwrap().closure,
+            m.closure
+        );
         assert_eq!(s.gaps(&m).len(), 2);
         let n = NarInfo::parse(REAL).unwrap();
         s.put_narinfo(&n, REAL.as_bytes()).unwrap();
@@ -430,7 +457,7 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         assert!(s.is_mirrored("znix", "main-abc-x"));
         s.remove_manifest("znix", "main-abc-x").unwrap();
         assert!(!s.is_local_origin("znix", "main-abc-x"));
-        assert_eq!(s.manifests().unwrap().len(), 0);
+        assert_eq!(s.manifest_files().unwrap().len(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 

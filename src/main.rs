@@ -161,9 +161,9 @@ fn main() -> Result<()> {
                     .filter(|u| !u.is_empty())
                     .collect();
                 let sync_app = app.clone();
-                std::thread::spawn(move || sync_loop(sync_app, s3, ups, sync_interval_secs));
-                let gc_app = app.clone();
-                std::thread::spawn(move || gc_loop(gc_app, gc_interval_secs));
+                std::thread::spawn(move || {
+                    sync_loop(sync_app, s3, ups, sync_interval_secs, gc_interval_secs)
+                });
             } else {
                 tracing::warn!("KASHA_REMOTE unset: mirroring and GC disabled");
             }
@@ -271,15 +271,23 @@ fn main() -> Result<()> {
     }
 }
 
-fn sync_loop(app: Arc<server::App>, s3: S3Remote, upstreams: Vec<String>, interval: u64) {
+fn sync_loop(
+    app: Arc<server::App>,
+    s3: S3Remote,
+    upstreams: Vec<String>,
+    sync_interval: u64,
+    gc_interval: u64,
+) {
+    let gc_interval = Duration::from_secs(gc_interval);
+    let m = mirror::Mirror {
+        store: &app.store,
+        remote: &s3,
+        upstreams,
+        keys: &app.keys,
+        agent: ureq::Agent::new_with_defaults(),
+        misses: Default::default(),
+    };
     loop {
-        let m = mirror::Mirror {
-            store: &app.store,
-            remote: &s3,
-            upstreams: upstreams.clone(),
-            keys: &app.keys,
-            agent: ureq::Agent::new_with_defaults(),
-        };
         match m.down() {
             Ok(report) => {
                 let total: usize = report.gaps.values().sum();
@@ -296,28 +304,24 @@ fn sync_loop(app: Arc<server::App>, s3: S3Remote, upstreams: Vec<String>, interv
             Ok(pending) => app.status.lock().unwrap().pending_mirror_up = pending,
             Err(e) => tracing::warn!(error = format!("{e:#}"), "mirror-up failed"),
         }
-        std::thread::sleep(Duration::from_secs(interval));
-    }
-}
-
-fn gc_loop(app: Arc<server::App>, interval: u64) {
-    let interval = Duration::from_secs(interval);
-    loop {
-        // Sleep only the remainder of the interval since the last sweep, which
-        // survives restarts: waiting a full interval from boot means a box that
-        // restarts more often than that never sweeps at all, while sweeping
-        // unconditionally on boot would sweep every restart of a crash loop.
-        let elapsed = app
+        // Sweep in this thread so it never reads manifests concurrently with
+        // mirror-down. Due-ness comes from the stamp, which survives restarts:
+        // timing from boot means a box restarting more often than the interval
+        // never sweeps. Stamping first means a sweep that dies mid-way waits a
+        // full interval instead of rerunning on every restart of a crash loop.
+        let due = app
             .store
             .last_sweep()
             .and_then(|t| t.elapsed().ok())
-            .unwrap_or(interval);
-        std::thread::sleep(interval.saturating_sub(elapsed));
-        if let Err(e) = gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
-            tracing::warn!(error = format!("{e:#}"), "box sweep failed");
+            .is_none_or(|elapsed| elapsed >= gc_interval);
+        if due {
+            if let Err(e) = app.store.record_sweep() {
+                tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
+            }
+            if let Err(e) = gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
+                tracing::warn!(error = format!("{e:#}"), "box sweep failed");
+            }
         }
-        if let Err(e) = app.store.record_sweep() {
-            tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
-        }
+        std::thread::sleep(Duration::from_secs(sync_interval));
     }
 }

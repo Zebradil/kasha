@@ -1,4 +1,5 @@
-//! Garbage collection: box sweep (in-process timer) and remote sweep (CI).
+//! Garbage collection: box sweep (in-process, between sync cycles) and remote
+//! sweep (CI).
 //!
 //! Both mark-sweep from surviving manifests via the shared retention
 //! selector. Mark set = union of retained manifests' closure lists (no
@@ -45,28 +46,35 @@ fn to_gen(id: String, m: &Manifest) -> Gen {
 /// marks from the newest-N manifests per group plus every unmirrored
 /// local-origin gen (box may hold the only copy), then sweeps objects.
 pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<SweepReport> {
-    let manifests = store.manifests()?;
+    // Two passes so only one closure is in memory at a time: retention needs
+    // every manifest's header, marking only the retained closures.
+    let files = store.manifest_files()?;
+    let mut gens = Vec::new();
+    for (flake, gen_id, path) in &files {
+        if let Some(m) = store.load_manifest(path)? {
+            gens.push(to_gen(format!("{flake}/{gen_id}"), &m));
+        }
+    }
     // No manifests means no mark set, which would sweep the whole store. That
     // is never a retention decision — it is a store that has not synced yet
     // (fresh volume, restored backup), so leave it alone.
-    if manifests.is_empty() {
+    if gens.is_empty() {
         tracing::info!("box sweep skipped: no manifests to mark from");
         return Ok(SweepReport::default());
     }
-    let gens: Vec<Gen> = manifests
-        .iter()
-        .map(|(_, m)| to_gen(format!("{}/{}", m.flake, m.gen_id), m))
-        .collect();
     let mut keep = retain(&gens, &Policy::boxed(), now);
-    for (_, m) in &manifests {
-        if store.is_local_origin(&m.flake, &m.gen_id) && !store.is_mirrored(&m.flake, &m.gen_id) {
-            keep.insert(format!("{}/{}", m.flake, m.gen_id));
+    drop(gens);
+    for (flake, gen_id, _) in &files {
+        if store.is_local_origin(flake, gen_id) && !store.is_mirrored(flake, gen_id) {
+            keep.insert(format!("{flake}/{gen_id}"));
         }
     }
 
     let mut mark: HashSet<String> = HashSet::new();
-    for (_, m) in &manifests {
-        if keep.contains(&format!("{}/{}", m.flake, m.gen_id)) {
+    for (flake, gen_id, path) in &files {
+        if keep.contains(&format!("{flake}/{gen_id}"))
+            && let Some(m) = store.load_manifest(path)?
+        {
             mark.extend(m.closure.iter().map(|p| store_hash_of(p).to_string()));
         }
     }
@@ -464,7 +472,7 @@ References: \n"
         assert!(store.has(&hashes[0]));
         assert!(store.has(he.as_str()));
         // Manifests are never deleted by the box.
-        assert_eq!(store.manifests().unwrap().len(), 5);
+        assert_eq!(store.manifest_files().unwrap().len(), 5);
 
         // Once mirrored, the guard lifts; 'e' is still newest in its group
         // so it stays retained by count.

@@ -299,7 +299,8 @@ $KUBE set env deploy/kasha KASHA_GC_INTERVAL=120
 $KUBE rollout status deploy/kasha --timeout=120s
 ```
 
-Wait ~2 min for the first sweep:
+The sweep runs in the sync thread after a mirror cycle, so the first one lands once the boot
+sync finishes (a few minutes on a warm store, longer if many gaps need fetching):
 
 ```sh
 $KUBE logs -l app.kubernetes.io/name=kasha -f --since=5m \

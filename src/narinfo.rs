@@ -139,6 +139,14 @@ impl NarInfo {
         })
     }
 
+    /// Key names of the `Sig` lines, so a rejection can say who signed it.
+    pub fn sig_key_names(&self) -> Vec<&str> {
+        self.sigs
+            .iter()
+            .filter_map(|s| s.split_once(':').map(|(name, _)| name))
+            .collect()
+    }
+
     /// The store path nix derives from `CA`, `References` and the name
     /// (nix's `makeTextPath` / `makeFixedOutputPath`). None when the CA is
     /// absent, malformed, contradicts the other fields, or is a kind kasha
@@ -268,6 +276,13 @@ Sig: cache.nixos.org-1:KEsNsSW3fMW5Izf4ZtjDbvSy/IO7al066kF52gutYtw/wJ8PopYTyu2aA
         assert_eq!(n.nar_size, 113096);
         assert_eq!(n.references.len(), 1);
         assert_eq!(n.sigs.len(), 1);
+    }
+
+    #[test]
+    fn sig_key_names_skips_malformed_lines() {
+        let text = format!("{REAL}Sig: garbage\nSig: other-1:AAAA\n");
+        let n = NarInfo::parse(&text).unwrap();
+        assert_eq!(n.sig_key_names(), ["cache.nixos.org-1", "other-1"]);
     }
 
     #[test]

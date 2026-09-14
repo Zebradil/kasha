@@ -274,8 +274,10 @@ fn ingest(app: &App, req: &mut Request, path: &str) -> Result<String> {
         );
         anyhow::ensure!(
             info.verify(&app.keys),
-            "neither a trusted signature nor a valid content address on {}",
-            info.store_path
+            "neither a trusted signature nor a valid content address on {} (sig keys: {:?}, CA: {:?})",
+            info.store_path,
+            info.sig_key_names(),
+            info.ca
         );
         app.store.put_narinfo(&info, &raw)?;
         tracing::info!(hash, "ingested narinfo");

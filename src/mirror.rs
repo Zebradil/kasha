@@ -144,6 +144,8 @@ impl Mirror<'_> {
             if !info.verify(self.keys) {
                 tracing::warn!(
                     hash,
+                    sig_keys = ?info.sig_key_names(),
+                    ca = info.ca.as_deref(),
                     "narinfo neither trusted-signed nor content-addressed, skipping source"
                 );
                 continue;

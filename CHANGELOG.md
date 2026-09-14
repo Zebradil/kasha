@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/Zebradil/kasha/compare/v0.3.0...v0.3.1) (2026-09-14)
+
+
+### Fixes
+
+* accept content-addressed narinfos without a signature ([482dd1f](https://github.com/Zebradil/kasha/commit/482dd1f468c085ae4a87a2bf7aadc11a64aac6bb))
+* bound box memory and stop sweep crash loop ([d7d7484](https://github.com/Zebradil/kasha/commit/d7d74840dc4c2624086ae4b2d90b445143121baf))
+
 ## [0.3.0](https://github.com/Zebradil/kasha/compare/v0.2.0...v0.3.0) (2026-09-06)
 
 

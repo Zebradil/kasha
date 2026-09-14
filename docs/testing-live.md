@@ -251,8 +251,9 @@ ls "$DEST/nix/store"
 ```
 
 The copy is gated by `trusted-public-keys`; it only succeeds because `znix.zebradil.dev:…` is
-trusted locally and the path carries that signature. A path with no trusted signature fails
-here, which is the same gate the box applies on ingest.
+trusted locally and the path carries that signature. An input-addressed path with no trusted
+signature fails here, which is the same gate the box applies on ingest. Content-addressed paths
+(`.drv` files, sources) pass both gates unsigned: their store path is derived from their content.
 
 Timing check against the remote for the LAN-speed claim, on a path both hold:
 

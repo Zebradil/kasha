@@ -4,9 +4,10 @@
 //! /nar/<file>, /roots/<flake>/<gen>.json, /status. 404 on miss — the
 //! consumer's substituter list falls back to remote/upstream (no pull-through).
 //!
-//! PUT (bearer or basic auth): same object paths. Every ingested narinfo's
-//! signature is verified against the trusted keys (ADR: box holds no signing
-//! key). PUT of a manifest marks the gen local-origin for mirror-up.
+//! PUT (bearer or basic auth): same object paths. Every ingested narinfo must
+//! carry a signature from a trusted key or a content address that reproduces
+//! its store path (ADR: box holds no signing key). PUT of a manifest marks the
+//! gen local-origin for mirror-up.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -273,7 +274,7 @@ fn ingest(app: &App, req: &mut Request, path: &str) -> Result<String> {
         );
         anyhow::ensure!(
             info.verify(&app.keys),
-            "no signature from a trusted key on {}",
+            "neither a trusted signature nor a valid content address on {}",
             info.store_path
         );
         app.store.put_narinfo(&info, &raw)?;

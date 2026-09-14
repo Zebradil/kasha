@@ -614,6 +614,7 @@ dependencies = [
  "rusty-s3",
  "serde",
  "serde_json",
+ "sha2",
  "tiny_http",
  "tracing",
  "tracing-subscriber",

@@ -18,7 +18,9 @@ remote cache.
 
 The box holds a flat binary-cache layout on disk (same layout as the remote bucket): `<hash>.narinfo`, `nar/…`,
 `roots/…`. No nix on the box, no database — the index is rebuilt by scanning narinfos at boot. Every ingested narinfo
-(push or mirror) must be signed by a trusted key; the box itself holds no signing key.
+(push or mirror) must be signed by a trusted key or be content-addressed with a `CA` field that reproduces its store
+path — the rule nix itself applies, which covers the unsigned `.drv` recipes and sources CI pushes. The box itself
+holds no signing key.
 
 ## Run the box
 

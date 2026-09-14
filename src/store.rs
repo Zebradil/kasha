@@ -85,8 +85,8 @@ impl Store {
         Ok(self.root.join("nar").join(safe_component(file)?))
     }
 
-    /// Store a verified narinfo byte-identical and index it. Caller verifies
-    /// the signature first.
+    /// Store a verified narinfo byte-identical and index it. Caller runs
+    /// `NarInfo::verify` first.
     pub fn put_narinfo(&self, info: &NarInfo, raw: &[u8]) -> Result<()> {
         let path = self.narinfo_path(info.store_hash())?;
         write_atomic(&path, |f| f.write_all(raw))?;

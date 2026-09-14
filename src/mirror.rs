@@ -28,9 +28,9 @@ pub struct Mirror<'a> {
     pub keys: &'a [PubKey],
     pub agent: ureq::Agent,
     /// Store hashes no source could supply, with when that was learned.
-    /// Most gaps are permanent (unsigned `.drv`s) and shared by many
-    /// manifests, so each is retried once per `MISS_RETRY` rather than once
-    /// per manifest per cycle. Keep one `Mirror` across cycles.
+    /// Gaps tend to persist (a path no source carries or vouches for) and are
+    /// shared by many manifests, so each is retried once per `MISS_RETRY`
+    /// rather than once per manifest per cycle. Keep one `Mirror` across cycles.
     pub misses: RefCell<HashMap<String, Instant>>,
 }
 
@@ -142,7 +142,10 @@ impl Mirror<'_> {
                 }
             };
             if !info.verify(self.keys) {
-                tracing::warn!(hash, "narinfo lacks trusted signature, skipping source");
+                tracing::warn!(
+                    hash,
+                    "narinfo neither trusted-signed nor content-addressed, skipping source"
+                );
                 continue;
             }
             let Some(mut nar) = source.get_stream(&info.url)? else {

@@ -1,0 +1,38 @@
+# Which dependency pull requests merge themselves, and which wait for a human.
+# Engine: https://github.com/Zebradil/pr-autopilot
+enabled = true
+
+# Documentation only — the engine never reads this table (ADR 0012). It records what
+# onboarding concluded about this repository, and why the policy below looks the way it does.
+[risk]
+# release-please-config.json + release.yml: Conventional Commits drive the release PR, merging
+# it tags an exact semver and republishes the closure under a generation named for the tag.
+release_mode = "release-please"
+
+# A merge to main publishes three things without further review: signed closures to the S3
+# cache (ci.yml), ghcr.io/zebradil/kasha-box:edge (oci.yml), and — through that image — the
+# nightly gc.yml sweep, which runs :edge at 04:00 UTC holding delete-capable credentials
+# against the real remote cache. Main reaches production within a day.
+deploys_from_main = true
+
+# Not a coverage number: these checks fail when a dependency changes behaviour. cargo test runs
+# in the checkPhase of kasha-bin itself, so it tests the artefact the cache serves rather than a
+# sibling build; the NixOS VM test in tests/v2.nix drives a real signed push, serve and
+# substitute through ureq, ed25519-dalek and sha2; gc.rs covers the sweep, its dry run and the
+# grace window; the oci smoke test loads and runs the image. rusty-s3 is the gap — nothing
+# exercises it against a real endpoint, which is part of why majors escalate.
+test_confidence = "high"
+
+# A personal tool with real consumers. A bad merge costs cache rebuilds or a broken :edge until
+# it is noticed, and is recoverable within a day.
+criticality = "normal"
+
+# The only thing the engine consults. A class absent here escalates, which is what "unknown"
+# — a bot payload we could not read — lands on.
+[policy]
+patch    = "merge"
+minor    = "merge"
+digest   = "merge"
+pin      = "merge"
+lockfile = "merge"
+major    = "escalate"

@@ -9,13 +9,17 @@
     'renovate[bot]@users.noreply.github.com',
     'github-actions[bot]@users.noreply.github.com',
   ],
+  // Machine-readable update classes for pr-autopilot, which never infers one from prose (ADR
+  // 0007). Without this marker it falls back to parsing Renovate's rendered body table, and
+  // anything it cannot read confidently classifies as "unknown" and escalates.
+  prBodyNotes: [
+    '<!-- pr-autopilot:upgrades [{{#each upgrades}}{"depName":"{{{depName}}}","updateType":"{{{updateType}}}","currentValue":"{{{currentValue}}}","newValue":"{{{newValue}}}"}{{#unless @last}},{{/unless}}{{/each}}] -->',
+  ],
   packageRules: [
-    // Enable automerging for non-major updates to all dependencies
-    {
-      automerge: true,
-      matchUpdateTypes: ["minor", "patch", "pin", "digest"],
-    },
-    // Group PRs for GitHub Action updates into a single PR
+    // Merging is pr-autopilot's decision, not Renovate's: see .github/pr-autopilot.toml for which
+    // update classes may merge and why. Renovate's own automerge is deliberately absent so the two
+    // cannot disagree — and it could not work here anyway, since main requires an approving review
+    // and Renovate cannot approve its own pull request.
     {
       description: "Group GitHub Action updates into a single PR",
       matchManagers: ["github-actions"],

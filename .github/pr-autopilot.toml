@@ -1,0 +1,50 @@
+# Governs which dependency-bot pull requests merge without a human. The engine lives in
+# Zebradil/pr-autopilot; this file is the whole of what it is allowed to do here.
+enabled = true
+
+# Documentation only — the engine never reads this table (ADR 0012). It records what onboarding
+# concluded about kasha, and why the policy below is a notch tighter than the default shape.
+[risk]
+# release-please-config.json + .github/workflows/release.yml.
+release_mode = "release-please"
+
+# Merging to main publishes, three ways: ci.yml signs and pushes the closure to the S3 cache
+# consumers substitute from, oci.yml pushes ghcr.io/zebradil/kasha-box:edge (the tag deploy/
+# README.md tells the box to run), and gc.yml runs that same :edge image nightly holding
+# delete-capable credentials against the real remote. A bad merge can delete cache objects
+# within 24 hours.
+deploys_from_main = true
+
+# Every pull request runs the full check set on both systems: cargo test in the package's
+# checkPhase, clippy -D warnings, fmt, actionlint, and on Linux the NixOS-VM `integration` check,
+# which drives a real nix client through sign -> nix copy --to -> kasha emit -> substitute with a
+# real signature gate. oci.yml additionally builds the image and smoke-tests `serve`. A dependency
+# that changed behaviour in the server, narinfo, store or mirror paths would fail here.
+#
+# The exception, and the reason `minor` escalates below: gc.rs, retention.rs and remote.rs
+# (rusty-s3, ureq) have unit tests only and are never exercised against a real bucket — so the one
+# path CI cannot vouch for is also the only one that deletes anything.
+test_confidence = "high"
+
+criticality = "normal"
+
+# The only thing the engine consults. A class absent from this table escalates, which is what
+# "unknown" relies on.
+[policy]
+patch    = "merge"
+digest   = "merge"   # Renovate re-pins GitHub Action SHAs, grouped into one pull request
+pin      = "merge"
+lockfile = "merge"   # cargo stays inside the semver ranges Cargo.toml already declares
+minor    = "escalate"
+major    = "escalate"
+
+[limits]
+max_merges    = 10
+max_repairs   = 3
+attempt_cap   = 2
+lease_minutes = 30
+
+# Reached only when a sweep runs with --agent-command; the scheduled workflow does not pass one,
+# so a red pull request escalates to a human instead of being repaired.
+[repair]
+strategy = "bot-branch"

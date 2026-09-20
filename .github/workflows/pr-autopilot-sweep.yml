@@ -1,0 +1,41 @@
+name: pr-autopilot sweep
+
+# Decides every open dependency-bot pull request against .github/pr-autopilot.toml, and merges the
+# ones policy allows. Scheduled only: cron fires on the default branch, so this starts working when
+# it lands on main, and green bot pull requests merge within a day.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show verdicts without acting
+        type: boolean
+        default: false
+
+# The engine authenticates as PR_AUTOPILOT_TOKEN, never as GITHUB_TOKEN: this repository's main
+# ruleset requires an approving review, and the Actions token cannot approve a pull request.
+permissions: {}
+
+concurrency:
+  group: pr-autopilot-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch the engine
+        run: |
+          curl -fsSL -o pr_autopilot.py \
+            https://raw.githubusercontent.com/Zebradil/pr-autopilot/v1/pr_autopilot.py
+
+      - name: Sweep
+        env:
+          GH_TOKEN: ${{ secrets.PR_AUTOPILOT_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 pr_autopilot.py sweep --repo "$GITHUB_REPOSITORY" "${args[@]}"

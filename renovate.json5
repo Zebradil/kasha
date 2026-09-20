@@ -9,12 +9,11 @@
     'renovate[bot]@users.noreply.github.com',
     'github-actions[bot]@users.noreply.github.com',
   ],
+  // pr-autopilot reads update-class metadata from this marker instead of parsing prose (ADR 0007).
+  prBodyNotes: [
+    '<!-- pr-autopilot:upgrades [{{#each upgrades}}{"depName":"{{{depName}}}","updateType":"{{{updateType}}}","currentValue":"{{{currentValue}}}","newValue":"{{{newValue}}}"}{{#unless @last}},{{/unless}}{{/each}}] -->',
+  ],
   packageRules: [
-    // Enable automerging for non-major updates to all dependencies
-    {
-      automerge: true,
-      matchUpdateTypes: ["minor", "patch", "pin", "digest"],
-    },
     // Group PRs for GitHub Action updates into a single PR
     {
       description: "Group GitHub Action updates into a single PR",

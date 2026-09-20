@@ -1,0 +1,31 @@
+enabled = true
+
+# Documentation only — the engine never reads this table (ADR 0012). It records what onboarding
+# concluded about the repository, and why the policy below looks the way it does.
+[risk]
+release_mode      = "release-please"  # release-please cuts tagged releases from main; see release.yml
+deploys_from_main = false             # oci.yml pushes ghcr.io/zebradil/kasha-box:edge on every merge,
+                                       # but the real deployment (znix/k3s) pins a sha/tag by hand
+test_confidence   = "high"            # nix flake check builds checks.<system>.build, which runs
+                                       # cargo test/clippy/fmt plus a NixOS-VM push/serve/substitute
+                                       # integration test (tests/v2.nix) — not lint-only
+criticality       = "normal"
+
+# The only thing the engine consults. Values are verdicts; an update class that is absent here
+# escalates.
+[policy]
+patch    = "merge"
+minor    = "merge"
+major    = "escalate"
+digest   = "merge"
+pin      = "merge"
+lockfile = "merge"
+
+[limits]
+max_merges    = 10   # merges per sweep
+max_repairs   = 3    # agent dispatches per sweep
+attempt_cap   = 2    # repair attempts per pull request, then escalate for good
+lease_minutes = 30   # how long one sweep's claim on a pull request lasts
+
+[repair]
+strategy = "bot-branch"   # bot-branch | side-pr

@@ -1,0 +1,46 @@
+# Scheduled and manual sweeps. Copy to .github/workflows/ in the governed repository.
+name: pr-autopilot sweep
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Show verdicts without acting
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pr-autopilot-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a GitHub App installation token
+        # Set the PR_AUTOPILOT_APP_ID repository variable to use a GitHub App (the documented
+        # identity — see docs/manual.md, "Identity"). Leave it unset to fall back to the
+        # PR_AUTOPILOT_TOKEN secret. The App needs contents: write and pull-requests: write.
+        id: app-token
+        if: vars.PR_AUTOPILOT_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.PR_AUTOPILOT_APP_ID }}
+          private-key: ${{ secrets.PR_AUTOPILOT_APP_PRIVATE_KEY }}
+      - name: Fetch the engine
+        run: |
+          curl -fsSL -o pr_autopilot.py \
+            https://raw.githubusercontent.com/Zebradil/pr-autopilot/v1/pr_autopilot.py
+      - name: Sweep
+        env:
+          # An identity that may approve pull requests — see docs/manual.md, "Identity".
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PR_AUTOPILOT_TOKEN }}
+        run: |
+          python3 pr_autopilot.py sweep --repo "$GITHUB_REPOSITORY" \
+            ${{ inputs.dry_run && '--dry-run' || '' }}

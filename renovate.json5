@@ -9,12 +9,16 @@
     'renovate[bot]@users.noreply.github.com',
     'github-actions[bot]@users.noreply.github.com',
   ],
+  // Machine-readable upgrade list for pr-autopilot, which decides a verdict per update
+  // class. Without it the class is recovered from the pull request table or from version
+  // arithmetic, and a grouped PR — the github-actions group below is one — is exactly where
+  // that guesswork gets a class wrong. A PR carrying several upgrades takes the most
+  // conservative verdict among them, so the marker is what keeps a digest bump from
+  // inheriting a neighbour's escalation.
+  prBodyNotes: [
+    '<!-- pr-autopilot:upgrades [{{#each upgrades}}{"depName":"{{{depName}}}","updateType":"{{{updateType}}}","currentValue":"{{{currentValue}}}","newValue":"{{{newValue}}}"}{{#unless @last}},{{/unless}}{{/each}}] -->',
+  ],
   packageRules: [
-    // Enable automerging for non-major updates to all dependencies
-    {
-      automerge: true,
-      matchUpdateTypes: ["minor", "patch", "pin", "digest"],
-    },
     // Group PRs for GitHub Action updates into a single PR
     {
       description: "Group GitHub Action updates into a single PR",

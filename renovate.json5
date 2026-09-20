@@ -15,9 +15,11 @@
   // that guesswork gets a class wrong. A PR carrying several upgrades takes the most
   // conservative verdict among them, so the marker is what keeps a digest bump from
   // inheriting a neighbour's escalation.
-  prBodyNotes: [
-    '<!-- pr-autopilot:upgrades [{{#each upgrades}}{"depName":"{{{depName}}}","updateType":"{{{updateType}}}","currentValue":"{{{currentValue}}}","newValue":"{{{newValue}}}"}{{#unless @last}},{{/unless}}{{/each}}] -->',
-  ],
+  //
+  // It has to be prHeader: prBodyNotes is compiled once per upgrade, with only that upgrade in
+  // scope, so the loop below renders an empty list. prFooter has the right scope but replaces
+  // Renovate's own attribution line.
+  prHeader: '<!-- pr-autopilot:upgrades [{{#each upgrades}}{"depName":"{{{depName}}}","updateType":"{{{updateType}}}","currentValue":"{{{currentValue}}}","newValue":"{{{newValue}}}"}{{#unless @last}},{{/unless}}{{/each}}] -->',
   packageRules: [
     // Group PRs for GitHub Action updates into a single PR
     {

@@ -19,7 +19,7 @@ on:
         type: boolean
         default: false
 
-# The engine acts as GH_TOKEN below, never as GITHUB_TOKEN, so this job's own token needs
+# The action acts as GH_TOKEN internally, never as GITHUB_TOKEN, so this job's own token needs
 # nothing at all.
 permissions: {}
 
@@ -29,33 +29,15 @@ concurrency:
 
 jobs:
   sweep:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
-      # Set the PR_AUTOPILOT_CLIENT_ID repository variable to act as a GitHub App, the
-      # documented identity. Leave it unset to fall back to the PR_AUTOPILOT_TOKEN secret.
-      # Creating the App and the permissions it needs: pr-autopilot's docs/manual.md,
-      # "Identity". Either one needs approve and merge rights.
-      - name: Mint a GitHub App installation token
-        id: app-token
-        if: vars.PR_AUTOPILOT_CLIENT_ID != ''
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: Zebradil/pr-autopilot@v1.0.0
         with:
+          dry-run: ${{ inputs.dry_run || false }}
+          # Set the PR_AUTOPILOT_CLIENT_ID repository variable to act as a GitHub App, the
+          # documented identity. Leave it unset to fall back to the PR_AUTOPILOT_TOKEN secret.
+          # Creating the App and the permissions it needs: pr-autopilot's docs/manual.md,
+          # "Identity". Either one needs approve and merge rights.
           client-id: ${{ vars.PR_AUTOPILOT_CLIENT_ID }}
-          private-key: ${{ secrets.PR_AUTOPILOT_APP_PRIVATE_KEY }}
-
-      # main, not the v1 the upstream template names: pr-autopilot has no v1 ref yet. Switch
-      # this line once it tags one. Deliberately a moving ref and not a pinned SHA — Renovate
-      # cannot see a URL in a run step, so a pin here would freeze the engine silently.
-      - name: Fetch the engine
-        run: |
-          curl -fsSL -o pr_autopilot.py \
-            https://raw.githubusercontent.com/Zebradil/pr-autopilot/main/pr_autopilot.py
-
-      - name: Sweep
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PR_AUTOPILOT_TOKEN }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          args=()
-          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
-          python3 pr_autopilot.py sweep --repo "$GITHUB_REPOSITORY" "${args[@]}"
+          app-private-key: ${{ secrets.PR_AUTOPILOT_APP_PRIVATE_KEY }}
+          token: ${{ secrets.PR_AUTOPILOT_TOKEN }}

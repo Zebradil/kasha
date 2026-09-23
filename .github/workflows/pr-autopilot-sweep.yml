@@ -3,7 +3,10 @@ name: pr-autopilot sweep
 # Approves and merges the dependency pull requests .github/pr-autopilot.toml allows, and
 # escalates the rest. This repository requires one approving review, and neither Renovate nor
 # GITHUB_TOKEN can approve, so without an identity of its own every bot pull request sits green
-# and blocked. That identity is the PR_AUTOPILOT_* credentials below.
+# and blocked. That identity is the zebradil-pr-autopilot App, whose installation token the
+# octo-sts step below fetches from sts.zebradil.dev in exchange for this run's OIDC token. The
+# trust policy (Zebradil/.github, .github/chainguard/pr-autopilot.sts.yaml) only answers this
+# file on refs/heads/main, and scopes the token to this repository.
 #
 # Daily rather than reactive: Renovate opens branches on schedule:nonOfficeHours, so there is
 # nothing to sweep during the day. 06:17 UTC is after that window closes and after gc.yml's
@@ -19,9 +22,10 @@ on:
         type: boolean
         default: false
 
-# The action acts as GH_TOKEN internally, never as GITHUB_TOKEN, so this job's own token needs
-# nothing at all.
-permissions: {}
+# The action acts as the octo-sts token, never as GITHUB_TOKEN, so this job's own token needs
+# only to request the OIDC token octo-sts verifies.
+permissions:
+  id-token: write
 
 concurrency:
   group: pr-autopilot-${{ github.repository }}
@@ -31,13 +35,15 @@ jobs:
   sweep:
     runs-on: ubuntu-slim
     steps:
-      - uses: Zebradil/pr-autopilot@84c10134158b323ba96af44419b41a8c0fe09bc5 # v1.2.0
+      - uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        id: sts
+        with:
+          # Written here rather than read from a variable, so a repository needs no setup.
+          domain: sts.zebradil.dev
+          # The owner, not owner/repo: the policy's caller_repository_only rejects repository scopes.
+          scope: ${{ github.repository_owner }}
+          identity: pr-autopilot
+      - uses: Zebradil/pr-autopilot@ad0f32518bb8cebaa8527e50d21c4fc35fff5cec # v1.3.0
         with:
           dry-run: ${{ inputs.dry_run || false }}
-          # Set the PR_AUTOPILOT_CLIENT_ID repository variable to act as a GitHub App, the
-          # documented identity. Leave it unset to fall back to the PR_AUTOPILOT_TOKEN secret.
-          # Creating the App and the permissions it needs: pr-autopilot's docs/manual.md,
-          # "Identity". Either one needs approve and merge rights.
-          client-id: ${{ vars.PR_AUTOPILOT_CLIENT_ID }}
-          app-private-key: ${{ secrets.PR_AUTOPILOT_APP_PRIVATE_KEY }}
-          token: ${{ secrets.PR_AUTOPILOT_TOKEN }}
+          token: ${{ steps.sts.outputs.token }}

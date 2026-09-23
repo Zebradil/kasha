@@ -43,7 +43,7 @@ jobs:
           # The owner, not owner/repo: the policy's caller_repository_only rejects repository scopes.
           scope: ${{ github.repository_owner }}
           identity: pr-autopilot
-      - uses: Zebradil/pr-autopilot@ad0f32518bb8cebaa8527e50d21c4fc35fff5cec # v1.3.0
+      - uses: Zebradil/pr-autopilot@4bcc29c03641a86a6bee67f9cb8c999d7ca4df5d # v1.4.0
         with:
           dry-run: ${{ inputs.dry_run || false }}
           token: ${{ steps.sts.outputs.token }}

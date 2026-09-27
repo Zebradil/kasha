@@ -94,7 +94,7 @@ flake input instead of vendoring a copy that drifts:
 ```sh
 CACHE_S3_URL='s3://znix-cache?endpoint=…&region=auto' \
 CACHE_SIGNING_KEY_FILE=./secret-key \
-KASHA_FLAKE=znix KASHA_BIN="$(nix build --no-link --print-out-paths .#kasha)/bin/kasha" \
+KASHA_FLAKE=znix KASHA_BIN="$(nix build --no-link --print-out-paths github:Zebradil/kasha#kasha-bin)/bin/kasha" \
   nix run 'github:Zebradil/kasha#kasha-cache-push' -- checks.x86_64-linux.host
 ```
 

@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=node_modules/@zebradil/starlight-kit/schema/site.schema.json
+name: kasha
+tagline: Net-local Nix binary cache box.
+repo: https://github.com/Zebradil/kasha
+theme: default
+install:
+  - label: Docker
+    code: docker pull ghcr.io/zebradil/kasha-box:edge # guessed: image and tag from README.md:33, pull not run
+  - label: Nix
+    code: nix profile install github:Zebradil/kasha # guessed: flake.nix packages.default = kasha, not run
+  - label: Cargo
+    code: cargo install --git https://github.com/Zebradil/kasha # guessed: not on crates.io (API 404), not run
+features:
+  - title: LAN-speed substitution
+    body: Serves signed Nix store paths from a flat binary-cache store on the local network; the box answers 404 on a miss and never proxies.
+  - title: Authenticated pushes
+    body: Accepts plain `nix copy` pushes over HTTP with netrc or bearer auth; writes are refused when no token is set.
+  - title: Eager bidirectional mirror
+    body: Pulls manifest-listed generations down from an S3-compatible remote cache before anyone asks, and mirrors local pushes back up.
+  - title: No signing key on the box
+    body: Every ingested narinfo must carry a trusted signature or a CA field that reproduces its store path; the box verifies and never signs.
+  - title: One static binary
+    body: No nix and no database on the box; the index is rebuilt by scanning narinfos at boot. Ships as an OCI image built around that binary.
+  - title: Host-scoped client selection
+    body: A NixOS module puts the box first and the remote cache second, with a low connect timeout for off-network fallback.
+links:
+  - label: Changelog
+    href: https://github.com/Zebradil/kasha/blob/main/CHANGELOG.md
+reference:
+  cli:
+    bin: kasha
+    build: cargo build --release
+    path: target/release/kasha

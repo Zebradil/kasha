@@ -1,0 +1,8 @@
+name: docs
+on:
+  push: { branches: [main] }
+  pull_request:
+permissions: { contents: read, pages: write, id-token: write }
+jobs:
+  docs:
+    uses: Zebradil/docs-kit/.github/workflows/docs.yml@cf02d7d01b147bc7b6c32d245e7c92eab1b4810c # v0.1.0

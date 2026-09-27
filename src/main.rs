@@ -32,10 +32,11 @@ enum Cmd {
         /// Store root (flat binary-cache layout).
         #[arg(long, env = "KASHA_DATA", default_value = "/kasha")]
         data: String,
+        /// Listen address for the cache HTTP server.
         #[arg(long, env = "KASHA_LISTEN", default_value = "0.0.0.0:5000")]
         listen: String,
         /// Write token; writes are refused when unset.
-        #[arg(long, env = "KASHA_TOKEN")]
+        #[arg(long, env = "KASHA_TOKEN", hide_env_values = true)]
         token: Option<String>,
         /// Trusted narinfo signing keys (`name:base64`, comma/space separated).
         #[arg(long, env = "KASHA_TRUSTED_KEYS", required = true)]
@@ -50,8 +51,10 @@ enum Cmd {
             default_value = "https://cache.nixos.org"
         )]
         upstreams: String,
+        /// Seconds to sleep between sync cycles (mirror-down, then mirror-up).
         #[arg(long, env = "KASHA_SYNC_INTERVAL", default_value = "300")]
         sync_interval_secs: u64,
+        /// Minimum seconds between box GC sweeps, checked after each sync cycle.
         #[arg(long, env = "KASHA_GC_INTERVAL", default_value = "86400")]
         gc_interval_secs: u64,
         /// Cap on concurrent requests. Each in-flight response holds a slot
@@ -66,12 +69,16 @@ enum Cmd {
     },
     /// Emit a v3 generation manifest (closure store paths on stdin).
     Emit {
+        /// Flake id the manifest is filed under (roots/<flake>/).
         #[arg(long)]
         flake: String,
+        /// Generation id; names the manifest object (roots/<flake>/<gen>.json).
         #[arg(long = "gen")]
         gen_id: String,
+        /// Source branch; `main` selects the main retention tier, anything else the other tier.
         #[arg(long)]
         branch: String,
+        /// Built attribute; generations are retained per (flake, branch, attr) group.
         #[arg(long)]
         attr: String,
         /// ISO-8601 UTC; defaults to now.
@@ -84,19 +91,25 @@ enum Cmd {
     },
     /// Sweep the remote cache (run from CI with delete-capable creds).
     Gc {
+        /// Remote cache as s3://bucket?endpoint=…&region=… (delete-capable creds).
         #[arg(long, env = "KASHA_REMOTE")]
         remote: String,
+        /// Print what would be deleted without deleting anything.
         #[arg(long)]
         dry_run: bool,
+        /// Objects younger than this are never deleted.
         #[arg(long, default_value = "24")]
         grace_hours: u64,
-        /// Override retention (defaults: main N=5 M=4wk, non-main N=1 M=1wk).
+        /// Keep the N newest `main` generations per group [default: 5].
         #[arg(long)]
         main_keep: Option<usize>,
+        /// Also keep `main` generations younger than this many weeks [default: 4].
         #[arg(long)]
         main_age_weeks: Option<u32>,
+        /// Keep the N newest non-`main` generations per group [default: 1].
         #[arg(long)]
         other_keep: Option<usize>,
+        /// Also keep non-`main` generations younger than this many weeks [default: 1].
         #[arg(long)]
         other_age_weeks: Option<u32>,
     },

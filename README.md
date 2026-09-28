@@ -94,7 +94,7 @@ flake input instead of vendoring a copy that drifts:
 ```sh
 CACHE_S3_URL='s3://znix-cache?endpoint=…&region=auto' \
 CACHE_SIGNING_KEY_FILE=./secret-key \
-KASHA_FLAKE=znix KASHA_BIN="$(nix build --no-link --print-out-paths .#kasha)/bin/kasha" \
+KASHA_FLAKE=znix KASHA_BIN="$(nix build --no-link --print-out-paths github:Zebradil/kasha#kasha-bin)/bin/kasha" \
   nix run 'github:Zebradil/kasha#kasha-cache-push' -- checks.x86_64-linux.host
 ```
 
@@ -129,12 +129,15 @@ GCs them until their manifest is confirmed present in the remote cache.
 
 ## GC
 
-- **Box sweep** runs in-process on a timer: retain a generation if it is younger than `M` or among the `N` newest in its
-  `(branch, attr)` group (defaults: main `N=5, M=4wk`, other `N=1, M=1wk`); a 24h grace window skips young objects.
-- **Remote sweep** runs from CI (`.github/workflows/gc.yml`) with delete-capable credentials the box never holds.
-  `--dry-run` reports only. The workflow runs `ghcr.io/zebradil/kasha-box:edge` rather than building from source, so a
-  gc change reaches the schedule only once the oci workflow has published it. Every phase is one request per object;
-  progress is logged every 100.
+- **Box sweep** runs in-process on a timer: retain the `N` newest generations in each `(flake, branch, attr)` group, by
+  count only (main `N=3`, other `N=1`), so the box never keeps a generation the remote sweep drops; a 24h grace window
+  skips young objects.
+- **Remote sweep** runs from CI (`.github/workflows/gc.yml`) with delete-capable credentials the box never holds: retain a
+  generation if it is younger than `M` or among the `N` newest in its group (defaults: main `N=5, M=4wk`, other
+  `N=1, M=1wk`; override with `--main-keep`, `--main-age-weeks`, `--other-keep`, `--other-age-weeks`). `--dry-run`
+  reports only. The workflow runs `ghcr.io/zebradil/kasha-box:edge` rather than building from source, so a gc change
+  reaches the schedule only once the oci workflow has published it. Manifest and narinfo reads are one request per
+  object, deletes go out in batches of up to 1000; progress is logged every 1000.
 
 ## Observability
 

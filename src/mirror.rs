@@ -525,6 +525,7 @@ References: \n"
             keys: vec![],
             token: None,
             status: std::sync::Mutex::new(crate::server::Status::default()),
+            counters: Default::default(),
         });
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());

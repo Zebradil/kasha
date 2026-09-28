@@ -75,6 +75,10 @@ lists them with defaults. The ones you may want to change:
 
 `KASHA_HTTP_THREADS` is retired: the box logs a warning when it is set and ignores it. Use `KASHA_MAX_INFLIGHT`.
 
+To sweep now instead of waiting for the interval, run `kasha sweep` inside the running container, for example
+`kubectl exec deploy/kasha -- /bin/kasha sweep`. It reads the same `KASHA_DATA`, prints each deleted object, and resets
+the interval.
+
 ## 5. Check it
 
 ```sh

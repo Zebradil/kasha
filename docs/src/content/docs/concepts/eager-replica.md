@@ -46,7 +46,7 @@ has a remote cache.
 2. **Mirror-up** takes every **local-origin** generation (one whose manifest was pushed to the box) that has not been
    mirrored yet, and uploads what the remote lacks: each NAR, then its narinfo, and the manifest last, so remote readers
    only ever see complete generations. It waits while any listed path is missing on the box.
-3. **Box GC** runs when `KASHA_GC_INTERVAL` has passed since the last sweep; see
+3. **Box GC** runs when `KASHA_GC_INTERVAL` has passed since the last sweep, or `kasha sweep` runs it on demand; see
    [Retention and GC](../retention/).
 
 Mirror-down is a dumb fetch of what the manifest lists: the box never expands closures or builds anything. That is why

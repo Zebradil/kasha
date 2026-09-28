@@ -272,8 +272,8 @@ not from here.
 **The box has never swept.** The deployment does not set `KASHA_GC_INTERVAL`, so the interval is
 the 86400s default and the first sweep is still ahead. The box stamps each sweep in
 `state/last-sweep` and sleeps only the remainder of the interval since that stamp, so a restart no
-longer pushes the schedule back — but there is no on-demand trigger, so exercising a sweep means
-temporarily shortening the interval, which restarts the pod.
+longer pushes the schedule back. `kasha sweep` runs one sweep on demand inside the running pod, no
+restart needed.
 
 What the sweep does with defaults: keep the newest **3** manifests per `(branch, attr)` group on
 `main`, **1** per non-main group, plus every unmirrored local-origin generation (the box may hold
@@ -286,8 +286,8 @@ retention.
 > the remote cache does not still hold, and GC never touches an unmirrored local-origin
 > generation — but do not run it while you need the box for a build.
 >
-> The restart also drops the box for a few seconds and forces an index rescan of every narinfo on
-> boot.
+> The one-shot sweep opens its own store handle, so it scans every narinfo before sweeping (the
+> same cost as a boot scan), while the server keeps serving.
 
 Two things bound the blast radius. The 24h mtime grace skips objects written in the last day
 regardless of retention, and a store holding no manifests is skipped outright (an empty mark set
@@ -296,19 +296,10 @@ the time of writing, so a sweep now would likely report `deleted=0` with a high 
 verify from the log line rather than assuming.)
 
 ```sh
-$KUBE set env deploy/kasha KASHA_GC_INTERVAL=120
-$KUBE rollout status deploy/kasha --timeout=120s
+$KUBE exec deploy/kasha -- /bin/kasha sweep
 ```
 
-The sweep runs in the sync thread after a mirror cycle, so the first one lands once the boot
-sync finishes (a few minutes on a warm store, longer if many gaps need fetching):
-
-```sh
-$KUBE logs -l app.kubernetes.io/name=kasha -f --since=5m \
-  | grep --line-buffered -E "box sweep done|box sweep failed"
-```
-
-Expected:
+It prints one `deleted <key>` line per removed object on stdout and logs the summary on stderr:
 
 ```
 {"message":"box sweep done","retained":<manifests>,"deleted":<objects>,"skipped_young":<n>}
@@ -316,17 +307,12 @@ Expected:
 
 `retained` is the manifest count the mark set was built from, `deleted` the objects removed,
 `skipped_young` those spared by the 24h grace. Cross-check the store shrank (or did not, if
-everything was young):
+everything was young). The server drops the swept narinfos from its index at the start of its
+next sync cycle and logs `index pruned after external sweep`, so `objects` catches up within one
+`KASHA_SYNC_INTERVAL`:
 
 ```sh
 curl -fsS "$KASHA_URL/status" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["objects"], "objects,", round(d["store_bytes"]/1e9, 2), "GB")'
-```
-
-Restore the default and let the pod settle:
-
-```sh
-$KUBE set env deploy/kasha KASHA_GC_INTERVAL-
-$KUBE rollout status deploy/kasha --timeout=120s
 ```
 
 ## 6. Remote GC

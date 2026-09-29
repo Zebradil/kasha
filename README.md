@@ -141,8 +141,10 @@ GCs them until their manifest is confirmed present in the remote cache.
 
 ## Observability
 
-Structured logs on stderr (JSON when not a terminal) and one `/status` JSON endpoint: object count, store size,
-per-flake last sync and gap count, pending mirror-up.
+Structured logs on stderr (JSON when not a terminal), a `/status` JSON endpoint (object count, store size, per-flake
+last sync and gap count, pending mirror-up) and a Prometheus `/metrics` endpoint with the same state (store size aside)
+plus narinfo hit/miss, ingest and box-sweep counters. Both are unauthenticated; metric names and a scrape config are in
+`docs/src/content/docs/guides/monitor-box.md`.
 
 ## Test
 
@@ -179,5 +181,4 @@ macOS builds are not published — CI has no darwin runner. `nix build .#kasha` 
 - Pull-through serving on miss.
 - Re-compression (objects stored byte-identical as received).
 - Mirror-up filtering (push everything the remote lacks).
-- Prometheus /metrics.
 - mDNS discovery and localhost selection shim.

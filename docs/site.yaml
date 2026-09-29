@@ -2,7 +2,8 @@
 name: kasha
 tagline: Net-local Nix binary cache box.
 repo: https://github.com/Zebradil/kasha
-theme: default
+theme: porridge
+logo: { light: ./src/assets/logo.svg, dark: ./src/assets/logo-dark.svg }
 install:
   - label: Docker
     code: docker pull ghcr.io/zebradil/kasha-box:edge # guessed: image and tag from README.md:33, pull not run

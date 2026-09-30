@@ -20,7 +20,7 @@ use remote::{Remote, S3Remote};
 use retention::Policy;
 
 #[derive(Parser)]
-#[command(name = "kasha", about = "net-local nix binary cache")]
+#[command(name = "kasha", version, about = "net-local nix binary cache")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

@@ -6,11 +6,12 @@ theme: porridge
 logo: { light: ./src/assets/logo.svg, dark: ./src/assets/logo-dark.svg }
 install:
   - label: Docker
-    code: docker pull ghcr.io/zebradil/kasha-box:edge # guessed: image and tag from README.md:33, pull not run
+    # edge, not a release tag: the site is built from main, as edge is, and no `latest` tag is published.
+    code: docker pull ghcr.io/zebradil/kasha-box:edge
   - label: Nix
-    code: nix profile install github:Zebradil/kasha # guessed: flake.nix packages.default = kasha, not run
+    code: nix profile install github:Zebradil/kasha
   - label: Cargo
-    code: cargo install --git https://github.com/Zebradil/kasha # guessed: not on crates.io (API 404), not run
+    code: cargo install --locked --git https://github.com/Zebradil/kasha
 features:
   - title: LAN-speed substitution
     body: Serves signed Nix store paths from a flat binary-cache store on the local network; the box answers 404 on a miss and never proxies.

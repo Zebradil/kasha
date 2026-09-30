@@ -10,6 +10,7 @@ mod store;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::io::Read;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -19,7 +20,7 @@ use remote::{Remote, S3Remote};
 use retention::Policy;
 
 #[derive(Parser)]
-#[command(name = "kasha", about = "net-local nix binary cache")]
+#[command(name = "kasha", version, about = "net-local nix binary cache")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -167,6 +168,7 @@ fn main() -> Result<()> {
                 keys: parse_keys(&trusted_keys)?,
                 token,
                 status: Mutex::new(server::Status::default()),
+                counters: Default::default(),
             });
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
@@ -334,10 +336,10 @@ fn sync_loop(
             Ok(report) => {
                 let total: usize = report.gaps.values().sum();
                 tracing::info!(fetched = report.fetched_paths, gaps = total, "synced");
-                let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+                let now = SystemTime::now();
                 let mut st = app.status.lock().unwrap();
                 for (flake, gaps) in report.gaps {
-                    st.flakes.insert(flake, (now.clone(), gaps));
+                    st.flakes.insert(flake, (now, gaps));
                 }
             }
             Err(e) => tracing::warn!(error = format!("{e:#}"), "mirror-down failed"),
@@ -361,8 +363,13 @@ fn sync_loop(
                 tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
             }
             seen_sweep = app.store.last_sweep();
-            if let Err(e) = gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
-                tracing::warn!(error = format!("{e:#}"), "box sweep failed");
+            match gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
+                Ok(r) => {
+                    app.counters
+                        .sweep_deleted
+                        .fetch_add(r.deleted.len() as u64, Ordering::Relaxed);
+                }
+                Err(e) => tracing::warn!(error = format!("{e:#}"), "box sweep failed"),
             }
         }
         std::thread::sleep(Duration::from_secs(sync_interval));

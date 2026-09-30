@@ -114,6 +114,12 @@ enum Cmd {
         #[arg(long)]
         other_age_weeks: Option<u32>,
     },
+    /// Run one box GC sweep now and exit; safe beside a running `serve`.
+    Sweep {
+        /// Store root (flat binary-cache layout).
+        #[arg(long, env = "KASHA_DATA", default_value = "/kasha")]
+        data: String,
+    },
 }
 
 fn parse_keys(s: &str) -> Result<Vec<PubKey>> {
@@ -283,6 +289,20 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+
+        Cmd::Sweep { data } => {
+            let store = store::Store::open(&data)?;
+            let report = gc::box_sweep(&store, SystemTime::now(), gc::GRACE);
+            // Stamped after the sweep, unlike the timer: a running `serve`
+            // prunes its index when the stamp moves, so the stamp must land
+            // once every deletion (even of a failed sweep) is on disk. It also
+            // defers the timer's next sweep, which this one makes redundant.
+            store.record_sweep().context("sweep stamp")?;
+            for key in &report?.deleted {
+                println!("deleted {key}");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -302,7 +322,16 @@ fn sync_loop(
         agent: ureq::Agent::new_with_defaults(),
         misses: Default::default(),
     };
+    let mut seen_sweep = app.store.last_sweep();
     loop {
+        // A stamp this loop did not write is a `kasha sweep` from another
+        // process, whose deletions this index has not seen.
+        let stamp = app.store.last_sweep();
+        if stamp != seen_sweep {
+            let pruned = app.store.prune_index();
+            tracing::info!(pruned, "index pruned after external sweep");
+            seen_sweep = stamp;
+        }
         match m.down() {
             Ok(report) => {
                 let total: usize = report.gaps.values().sum();
@@ -333,6 +362,7 @@ fn sync_loop(
             if let Err(e) = app.store.record_sweep() {
                 tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
             }
+            seen_sweep = app.store.last_sweep();
             match gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
                 Ok(r) => {
                     app.counters

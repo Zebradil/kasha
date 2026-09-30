@@ -11,6 +11,7 @@ remote cache.
 - `kasha serve`: the box — binary-cache HTTP server, mirror-down/up workers, GC timer.
 - `kasha emit`: build and publish a v3 generation manifest (closure paths on stdin).
 - `kasha gc`: sweep the remote cache; run from CI with delete-capable credentials.
+- `kasha sweep`: run one box sweep now (e.g. `kubectl exec` into a running box) and exit.
 - `nixosModules.consumer`: host-scoped static substituter selection — box first, remote cache second, low
   `connect-timeout`.
 - `packages.<system>.kasha-cache-push`: the producer-side resolve → sign → push → emit script.
@@ -131,7 +132,8 @@ GCs them until their manifest is confirmed present in the remote cache.
 
 - **Box sweep** runs in-process on a timer: retain the `N` newest generations in each `(flake, branch, attr)` group, by
   count only (main `N=3`, other `N=1`), so the box never keeps a generation the remote sweep drops; a 24h grace window
-  skips young objects.
+  skips young objects. `kasha sweep` runs the same sweep once, on demand, beside a running `serve`; it stamps the sweep
+  time, so the timer counts its next interval from there.
 - **Remote sweep** runs from CI (`.github/workflows/gc.yml`) with delete-capable credentials the box never holds: retain a
   generation if it is younger than `M` or among the `N` newest in its group (defaults: main `N=5, M=4wk`, other
   `N=1, M=1wk`; override with `--main-keep`, `--main-age-weeks`, `--other-keep`, `--other-age-weeks`). `--dry-run`

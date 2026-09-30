@@ -1,9 +1,9 @@
 ---
 title: Monitor a box
-description: Read the box's /status endpoint and logs to tell a healthy box from a stuck one.
+description: Read the box's /status and /metrics endpoints and logs to tell a healthy box from a stuck one.
 ---
 
-The box reports its state in one JSON endpoint and in structured logs. There is no metrics endpoint.
+The box reports its state in a JSON endpoint, a Prometheus endpoint and structured logs.
 
 ## Read /status
 
@@ -25,6 +25,50 @@ curl -s http://box.lan:5000/status
 
 `flakes` stays empty until the box has a remote cache and has finished a sync cycle with at least one manifest.
 `/status` needs no authentication.
+
+## Scrape /metrics
+
+`/metrics` serves the same state in the Prometheus text format (`text/plain; version=0.0.4`), plus a few counters. It
+needs no authentication.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `kasha_objects` | gauge | narinfos in the box's index |
+| `kasha_pending_mirror_up` | gauge | same as `pending_mirror_up` in `/status` |
+| `kasha_flake_last_sync_timestamp_seconds{flake}` | gauge | `last_sync` in `/status`, as Unix seconds |
+| `kasha_flake_gaps{flake}` | gauge | `gaps` in `/status` |
+| `kasha_narinfo_requests_total{result}` | counter | narinfo lookups, `result` is `hit` or `miss` |
+| `kasha_ingest_requests_total{result}` | counter | pushes, `result` is `accepted`, `rejected` (bad content or signature) or `unauthorized` |
+| `kasha_last_sweep_timestamp_seconds` | gauge | start of the last box GC sweep attempt; absent until the first sweep |
+| `kasha_sweep_deleted_objects_total` | counter | narinfos and NARs the box GC deleted |
+
+Counters start at zero when the box restarts. `store_bytes` has no metric: it walks the whole store, which is too
+costly to repeat on every scrape; read it from `/status`.
+
+```yaml
+scrape_configs:
+  - job_name: kasha
+    static_configs:
+      - targets: ["box.lan:5000"]
+```
+
+Alerts that match the checks below:
+
+```yaml
+groups:
+  - name: kasha
+    rules:
+      - alert: KashaSyncStale
+        expr: time() - kasha_flake_last_sync_timestamp_seconds > 3600
+      - alert: KashaMirrorUpStuck
+        expr: kasha_pending_mirror_up > 0
+        for: 1h
+      - alert: KashaSweepStale
+        expr: time() - kasha_last_sweep_timestamp_seconds > 2 * 86400
+```
+
+The narinfo hit ratio, `rate(kasha_narinfo_requests_total{result="hit"}[1h]) / rate(kasha_narinfo_requests_total[1h])`,
+shows how much of the clients' demand the box serves itself.
 
 ## Tell healthy from stuck
 
@@ -58,6 +102,7 @@ Each successful cycle logs `synced` with `fetched` and `gaps` counts. On startup
 `KASHA_REMOTE` is unset, since writes or mirroring are then off.
 
 :::caution[Unverified]
-`/status`, the log levels and the startup warnings were checked against a local box without a remote cache; the sync
-and mirror-up messages were read from the source, not observed.
+`/status`, `/metrics`, the log levels and the startup warnings were checked against a local box without a remote cache;
+the sync and mirror-up messages were read from the source, not observed. The scrape config and alert rules were not run
+against a Prometheus server; `promtool check metrics` accepts the endpoint's output.
 :::

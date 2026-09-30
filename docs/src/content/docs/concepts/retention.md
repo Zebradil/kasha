@@ -15,7 +15,7 @@ shares the other tier.
 | Sweep | `main` | other branches | Where it runs |
 | --- | --- | --- | --- |
 | Remote | `N=5`, `M=4 weeks` | `N=1`, `M=1 week` | `kasha gc`, from CI, with delete-capable credentials |
-| Box | `N=3`, count only | `N=1`, count only | inside `kasha serve`, every `KASHA_GC_INTERVAL` |
+| Box | `N=3`, count only | `N=1`, count only | inside `kasha serve`, every `KASHA_GC_INTERVAL`; on demand with `kasha sweep` |
 
 The remote defaults can be overridden per run with `kasha gc` flags; the box policy is fixed. Because the box keeps the
 newest 3 or 1 of what the remote keeps, and never more, a box never retains a generation the remote cache has dropped.
@@ -39,6 +39,11 @@ remote retention reaches the box through sync.
 Writers publish a manifest after every path it lists, and the grace window skips any object younger than 24 hours. A
 sweep running during a push therefore leaves the push's objects alone until the manifest lands and marks them. Re-running
 a sweep is harmless: it deletes what the previous run missed.
+
+`kasha sweep` runs the box sweep from a separate process, next to a running `kasha serve`, so the server's in-memory
+index cannot see its deletions directly. The sweep stamps `state/last-sweep` when it finishes, and at the start of its
+next sync cycle the server drops index entries whose narinfo is gone from disk. A deleted path that a manifest still
+lists then shows up as a gap again, and mirror-down fetches it back.
 
 Two more guards protect data only the box holds:
 

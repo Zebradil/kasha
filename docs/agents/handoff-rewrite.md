@@ -75,7 +75,7 @@ key) survive unchanged.
   ever adopted, the CLI push must sign only paths lacking a trusted sig, not the whole closure.
 - Pull-through serving on miss.
 - Prometheus /metrics.
-- Selection shim / discovery backends (`todo.md`).
+- Selection shim / discovery backends (moved to [sito](https://github.com/Zebradil/sito)).
 
 ## Suggested build order
 

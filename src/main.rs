@@ -10,6 +10,7 @@ mod store;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use std::io::Read;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -19,7 +20,7 @@ use remote::{Remote, S3Remote};
 use retention::Policy;
 
 #[derive(Parser)]
-#[command(name = "kasha", about = "net-local nix binary cache")]
+#[command(name = "kasha", version, about = "net-local nix binary cache")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -113,6 +114,12 @@ enum Cmd {
         #[arg(long)]
         other_age_weeks: Option<u32>,
     },
+    /// Run one box GC sweep now and exit; safe beside a running `serve`.
+    Sweep {
+        /// Store root (flat binary-cache layout).
+        #[arg(long, env = "KASHA_DATA", default_value = "/kasha")]
+        data: String,
+    },
 }
 
 fn parse_keys(s: &str) -> Result<Vec<PubKey>> {
@@ -161,6 +168,7 @@ fn main() -> Result<()> {
                 keys: parse_keys(&trusted_keys)?,
                 token,
                 status: Mutex::new(server::Status::default()),
+                counters: Default::default(),
             });
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
@@ -281,6 +289,20 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+
+        Cmd::Sweep { data } => {
+            let store = store::Store::open(&data)?;
+            let report = gc::box_sweep(&store, SystemTime::now(), gc::GRACE);
+            // Stamped after the sweep, unlike the timer: a running `serve`
+            // prunes its index when the stamp moves, so the stamp must land
+            // once every deletion (even of a failed sweep) is on disk. It also
+            // defers the timer's next sweep, which this one makes redundant.
+            store.record_sweep().context("sweep stamp")?;
+            for key in &report?.deleted {
+                println!("deleted {key}");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -300,15 +322,24 @@ fn sync_loop(
         agent: ureq::Agent::new_with_defaults(),
         misses: Default::default(),
     };
+    let mut seen_sweep = app.store.last_sweep();
     loop {
+        // A stamp this loop did not write is a `kasha sweep` from another
+        // process, whose deletions this index has not seen.
+        let stamp = app.store.last_sweep();
+        if stamp != seen_sweep {
+            let pruned = app.store.prune_index();
+            tracing::info!(pruned, "index pruned after external sweep");
+            seen_sweep = stamp;
+        }
         match m.down() {
             Ok(report) => {
                 let total: usize = report.gaps.values().sum();
                 tracing::info!(fetched = report.fetched_paths, gaps = total, "synced");
-                let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+                let now = SystemTime::now();
                 let mut st = app.status.lock().unwrap();
                 for (flake, gaps) in report.gaps {
-                    st.flakes.insert(flake, (now.clone(), gaps));
+                    st.flakes.insert(flake, (now, gaps));
                 }
             }
             Err(e) => tracing::warn!(error = format!("{e:#}"), "mirror-down failed"),
@@ -331,8 +362,14 @@ fn sync_loop(
             if let Err(e) = app.store.record_sweep() {
                 tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
             }
-            if let Err(e) = gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
-                tracing::warn!(error = format!("{e:#}"), "box sweep failed");
+            seen_sweep = app.store.last_sweep();
+            match gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
+                Ok(r) => {
+                    app.counters
+                        .sweep_deleted
+                        .fetch_add(r.deleted.len() as u64, Ordering::Relaxed);
+                }
+                Err(e) => tracing::warn!(error = format!("{e:#}"), "box sweep failed"),
             }
         }
         std::thread::sleep(Duration::from_secs(sync_interval));

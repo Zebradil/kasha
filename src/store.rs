@@ -252,6 +252,18 @@ impl Store {
         Ok(())
     }
 
+    /// Drop index entries whose narinfo is gone from disk: deleted by a sweep
+    /// in another process (`kasha sweep`), which this index cannot see. A
+    /// stale entry hides the path from `gaps`, so mirror-down would never
+    /// refetch it. Prune-only under the write lock, never a rebuild: a
+    /// `put_narinfo` racing a rebuild could drop out of the index for good.
+    pub fn prune_index(&self) -> usize {
+        let mut idx = self.index.write().unwrap();
+        let before = idx.len();
+        idx.retain(|h, _| self.narinfo_path(h).is_ok_and(|p| p.exists()));
+        before - idx.len()
+    }
+
     /// Indexed nar URL for a store hash.
     pub fn url_of(&self, store_hash: &str) -> Option<String> {
         self.index.read().unwrap().get(store_hash).cloned()
@@ -458,6 +470,32 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         s.remove_manifest("znix", "main-abc-x").unwrap();
         assert!(!s.is_local_origin("znix", "main-abc-x"));
         assert_eq!(s.manifest_files().unwrap().len(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prune_index_surfaces_a_foreign_delete_as_a_gap() {
+        let root = tmp();
+        let server = Store::open(&root).unwrap();
+        let n = NarInfo::parse(REAL).unwrap();
+        server.put_narinfo(&n, REAL.as_bytes()).unwrap();
+        let m = Manifest {
+            version: 3,
+            flake: "znix".into(),
+            gen_id: "main-abc-x".into(),
+            branch: "main".into(),
+            attr: "x".into(),
+            timestamp: "2026-08-20T10:00:00Z".into(),
+            closure: vec!["/nix/store/v4f0jj9sz97ckskvacf40llz4nfr19jf-hello-2.12.3".into()],
+        };
+        // A second handle on the same root, as `kasha sweep` beside `serve`.
+        Store::open(&root)
+            .unwrap()
+            .remove_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf")
+            .unwrap();
+        assert!(server.gaps(&m).is_empty());
+        assert_eq!(server.prune_index(), 1);
+        assert_eq!(server.gaps(&m).len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 

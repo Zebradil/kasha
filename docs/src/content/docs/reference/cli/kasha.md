@@ -14,8 +14,10 @@ Commands:
   serve  Run the box: cache HTTP server + mirror workers + GC timer
   emit   Emit a v3 generation manifest (closure store paths on stdin)
   gc     Sweep the remote cache (run from CI with delete-capable creds)
+  sweep  Run one box GC sweep now and exit; safe beside a running `serve`
   help   Print this message or the help of the given subcommand(s)
 
 Options:
-  -h, --help  Print help
+  -h, --help     Print help
+  -V, --version  Print version
 ```

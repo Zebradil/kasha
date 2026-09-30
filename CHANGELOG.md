@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/Zebradil/kasha/compare/v0.4.0...v0.5.0) (2026-09-30)
+
+
+### Features
+
+* add --version flag and verify docs install commands ([#71](https://github.com/Zebradil/kasha/issues/71)) ([7298edd](https://github.com/Zebradil/kasha/commit/7298eddb733e06311ad26eb7b61eddf5cf56db09))
+* serve Prometheus metrics at /metrics ([#69](https://github.com/Zebradil/kasha/issues/69)) ([a1a9854](https://github.com/Zebradil/kasha/commit/a1a98544076feefd461631fec4084fab830db0c4))
+
+
+### Documentation
+
+* bootstrap docs-kit site and close docs audit gaps ([#60](https://github.com/Zebradil/kasha/issues/60)) ([9b012b8](https://github.com/Zebradil/kasha/commit/9b012b8c698cc4c75d3e8620c0a0805a2a534bfe))
+* new site design with porridge theme and stir logo ([#72](https://github.com/Zebradil/kasha/issues/72)) ([80985bc](https://github.com/Zebradil/kasha/commit/80985bc6e0826ecc3371946f6f21793a177c326a))
+* prune todo.md to open investigations ([#68](https://github.com/Zebradil/kasha/issues/68)) ([906cd30](https://github.com/Zebradil/kasha/commit/906cd308e21ac9e86748503140680a9805ef9695))
+
 ## [0.4.0](https://github.com/Zebradil/kasha/compare/v0.3.1...v0.4.0) (2026-09-14)
 
 

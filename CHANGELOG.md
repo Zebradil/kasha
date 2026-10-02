@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/Zebradil/kasha/compare/v0.5.0...v0.6.0) (2026-10-02)
+
+
+### Features
+
+* add `kasha sweep` for an on-demand box GC sweep ([#70](https://github.com/Zebradil/kasha/issues/70)) ([c56aae6](https://github.com/Zebradil/kasha/commit/c56aae6b4e3bd1c8d0b96c8b376640d5ae851f4d))
+* **emit-manifest:** file pull request generations under one pr branch ([#75](https://github.com/Zebradil/kasha/issues/75)) ([bed6589](https://github.com/Zebradil/kasha/commit/bed6589bab15a55a76686df6416eda3b49f096ef))
+
 ## [0.5.0](https://github.com/Zebradil/kasha/compare/v0.4.0...v0.5.0) (2026-09-30)
 
 

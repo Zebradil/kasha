@@ -79,8 +79,9 @@ published build:
     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 ```
 
-`branch` defaults to `GITHUB_REF_NAME` and `gen` to `<branch>-<7-char sha>-<attr>`, both sanitized to
-`A-Za-z0-9_.-`. The action outputs the `gen`, `branch` and `manifest-key` it used.
+`branch` defaults to `pr` on pull request events and to `GITHUB_REF_NAME` otherwise, and `gen` to
+`<branch>-<7-char sha>-<attr>`, both sanitized to `A-Za-z0-9_.-`. All pull requests share the `pr` branch because
+retention always keeps a group's newest generation: one group per pull request would never shrink. The action outputs the `gen`, `branch` and `manifest-key` it used.
 
 ## Option C: kasha emit
 

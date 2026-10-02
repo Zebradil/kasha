@@ -1,12 +1,10 @@
 name: CI
 
-# Not a call to zebradil/nix-ci's reusable ci.yaml: that wrapper builds with
-# nix-fast-build (attr-set strategy) and never forwards what it pushed, but
-# this workflow needs the pushed closure's path list to hand emit-manifest a
-# generation manifest — without one the push is invisible to kasha's own
-# retention (an unmanifested object is never in any generation's mark set, so
-# it is deleted on the next sweep past its 24h grace window). So this calls
-# nix-ci's actions directly and chains the local emit-manifest action after.
+# Not a call to zebradil/nix-ci's reusable ci.yaml: nix-ci's build action
+# publishes the kasha manifest with the emit-manifest release it pins, while
+# kasha's CI must exercise emit-manifest from the commit under test. So this
+# calls nix-ci's actions directly, turns their manifest off, and chains the
+# local emit-manifest action after the build.
 
 on:
   push:
@@ -58,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@0e167a89e52d8d3e0dfeb5619d6e6f715a4ea661 # v1.3.0
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@8cdc577c41dd17315faa6e049771a858ff872718 # v2.0.0
         with:
           # kasha's own remote cache, read side. Plain public S3 reads, so
           # this works for fork pull requests too — `vars` are exposed to
@@ -94,14 +92,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@0e167a89e52d8d3e0dfeb5619d6e6f715a4ea661 # v1.3.0
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@8cdc577c41dd17315faa6e049771a858ff872718 # v2.0.0
         with:
           extra-substituters: ${{ vars.KASHA_CACHE_URL }}
           extra-trusted-public-keys: ${{ vars.KASHA_CI_PUBLIC_KEY }}
           signing-key: ${{ env.PUSH_TO_CACHE == 'true' && secrets.KASHA_CI_SIGNING_KEY || '' }}
 
       - id: build
-        uses: zebradil/nix-ci/.github/actions/build@0e167a89e52d8d3e0dfeb5619d6e6f715a4ea661 # v1.3.0
+        uses: zebradil/nix-ci/.github/actions/build@8cdc577c41dd17315faa6e049771a858ff872718 # v2.0.0
         with:
           # checks.<system>.build is packages.<system>.kasha-bin, so building the
           # check set publishes the consumable binary as a side effect of testing
@@ -111,6 +109,9 @@ jobs:
           cache-s3-url: ${{ env.PUSH_TO_CACHE == 'true' && vars.CACHE_S3_URL || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
+          # The manifest is published below with emit-manifest from the commit
+          # under test, not the release nix-ci pins.
+          kasha-manifest: false
 
       - name: Check for pushed paths
         id: pushed

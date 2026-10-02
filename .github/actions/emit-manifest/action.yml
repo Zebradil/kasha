@@ -45,8 +45,11 @@ inputs:
   branch:
     description: >
       Branch the generation was built from; drives the box's retention tier (kasha keeps `main`
-      longer than other branches). Defaults to GITHUB_REF_NAME, sanitized to the character set
-      kasha's gen ids require.
+      longer than other branches). Defaults to `pr` on pull_request events and to GITHUB_REF_NAME
+      otherwise, sanitized to the character set kasha's gen ids require. Every pull request shares
+      the `pr` group: retention always keeps a group's newest generation, so a group per pull
+      request (GITHUB_REF_NAME is `<number>/merge` there) would leave one generation behind
+      forever for every pull request ever opened.
     required: false
     default: ''
   gen:
@@ -112,7 +115,12 @@ runs:
         sanitize() { printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '-'; }
 
         branch="$BRANCH_IN"
-        [[ -z "$branch" ]] && branch="$(sanitize "$GITHUB_REF_NAME")"
+        if [[ -z "$branch" ]]; then
+          case "$GITHUB_EVENT_NAME" in
+            pull_request | pull_request_target) branch=pr ;;
+            *) branch="$(sanitize "$GITHUB_REF_NAME")" ;;
+          esac
+        fi
 
         gen="$GEN_IN"
         # GITHUB_SHA is the full 40-char commit SHA; 7 chars matches the

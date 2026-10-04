@@ -1,6 +1,9 @@
 # yaml-language-server: $schema=node_modules/@zebradil/starlight-kit/schema/site.schema.json
 name: kasha
 tagline: Net-local Nix binary cache box.
+headline: Net-local Nix binary cache box.
+eyebrow: Nix binary cache · single static binary
+description: Serves signed Nix store paths at LAN speed, accepts authenticated `nix copy` pushes over HTTP, and mirrors generations to and from a durable S3-compatible remote cache.
 repo: https://github.com/Zebradil/kasha
 theme: porridge
 logo: { light: ./src/assets/logo.svg, dark: ./src/assets/logo-dark.svg }
@@ -25,6 +28,22 @@ features:
     body: No nix and no database on the box; the index is rebuilt by scanning narinfos at boot. Ships as an OCI image built around that binary.
   - title: Host-scoped client selection
     body: A NixOS module puts the box first and the remote cache second, with a low connect timeout for off-network fallback.
+flow:
+  highlight: kasha box
+  steps:
+    - { from: CI / laptop, to: kasha box, label: nix copy · token }
+    - { from: kasha box, to: S3 remote, label: mirror up · mirror down, arrow: both }
+    - { from: NixOS hosts, to: kasha box, label: "substitute: box → remote", arrow: back }
+  note: Off the LAN, hosts fall back to the remote cache after a low connect timeout.
+components:
+  intro: One binary with three commands, a NixOS module for consumers, and a push script for producers.
+  items:
+    - { name: kasha serve, body: "The box: cache server, mirror workers, GC timer." }
+    - { name: kasha emit, body: Build and publish a v3 generation manifest. }
+    - { name: kasha gc, body: Sweep the remote cache from CI. }
+    - { name: nixosModules.consumer, body: "Box first, remote second, low connect-timeout." }
+    - { name: kasha-cache-push, body: Resolve → sign → push → emit. }
+    - { name: oci-image, body: "`ghcr.io/zebradil/kasha-box`" }
 links:
   - label: Changelog
     href: https://github.com/Zebradil/kasha/blob/main/CHANGELOG.md

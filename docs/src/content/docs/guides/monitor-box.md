@@ -70,6 +70,10 @@ groups:
 The narinfo hit ratio, `rate(kasha_narinfo_requests_total{result="hit"}[1h]) / rate(kasha_narinfo_requests_total[1h])`,
 shows how much of the clients' demand the box serves itself.
 
+A Grafana dashboard over these metrics ships in the repository as
+[`deploy/grafana/kasha.json`](https://github.com/Zebradil/kasha/blob/main/deploy/grafana/kasha.json). It picks the
+Prometheus data source and the scrape `job` from dashboard variables, and its thresholds match the alerts above.
+
 ## Tell healthy from stuck
 
 - **`last_sync` falls behind.** A healthy box updates it every `KASHA_SYNC_INTERVAL` seconds (300 by default), plus

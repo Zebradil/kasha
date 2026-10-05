@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/Zebradil/kasha/compare/v0.6.0...v0.7.0) (2026-10-05)
+
+
+### Features
+
+* ship a Grafana dashboard for the box metrics ([#82](https://github.com/Zebradil/kasha/issues/82)) ([55b62bc](https://github.com/Zebradil/kasha/commit/55b62bc7ebcf61414dc8b6e5abcef19f0b9f988c))
+
+
+### Fixes
+
+* **deps:** update docs-kit to v0.5.0 ([#81](https://github.com/Zebradil/kasha/issues/81)) ([75913cb](https://github.com/Zebradil/kasha/commit/75913cb8226e2ca31917c5a290c399a81f70a7ec))
+
+
+### Documentation
+
+* fill the new landing layout fields ([#77](https://github.com/Zebradil/kasha/issues/77)) ([e28a63e](https://github.com/Zebradil/kasha/commit/e28a63e3a981e2ad313980833ae249bf03690773))
+
 ## [0.6.0](https://github.com/Zebradil/kasha/compare/v0.5.0...v0.6.0) (2026-10-02)
 
 

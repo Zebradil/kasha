@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/Zebradil/kasha/compare/v0.7.0...v0.8.0) (2026-10-06)
+
+
+### Features
+
+* metrics and dashboard panels for generation freshness, NAR throughput and NAR age ([#83](https://github.com/Zebradil/kasha/issues/83)) ([978f434](https://github.com/Zebradil/kasha/commit/978f434bf0b1c9472cb47840c23af77c54314a63))
+
 ## [0.7.0](https://github.com/Zebradil/kasha/compare/v0.6.0...v0.7.0) (2026-10-05)
 
 

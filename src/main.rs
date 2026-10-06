@@ -169,6 +169,7 @@ fn main() -> Result<()> {
                 token,
                 status: Mutex::new(server::Status::default()),
                 counters: Default::default(),
+                ages: Default::default(),
             });
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
@@ -321,6 +322,7 @@ fn sync_loop(
         keys: &app.keys,
         agent: ureq::Agent::new_with_defaults(),
         misses: Default::default(),
+        counters: &app.counters,
     };
     let mut seen_sweep = app.store.last_sweep();
     loop {
@@ -341,6 +343,8 @@ fn sync_loop(
                 for (flake, gaps) in report.gaps {
                     st.flakes.insert(flake, (now, gaps));
                 }
+                // Replaced whole: branches dropped by retention drop their series.
+                st.generations = report.newest;
             }
             Err(e) => tracing::warn!(error = format!("{e:#}"), "mirror-down failed"),
         }

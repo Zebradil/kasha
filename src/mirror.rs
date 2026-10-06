@@ -13,11 +13,13 @@ use anyhow::{Context, Result};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
-use std::time::{Duration, Instant};
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::manifest::Manifest;
 use crate::narinfo::{NarInfo, PubKey, store_hash_of};
 use crate::remote::Remote;
+use crate::server::Counters;
 use crate::store::Store;
 
 pub struct Mirror<'a> {
@@ -32,6 +34,7 @@ pub struct Mirror<'a> {
     /// shared by many manifests, so each is retried once per `MISS_RETRY`
     /// rather than once per manifest per cycle. Keep one `Mirror` across cycles.
     pub misses: RefCell<HashMap<String, Instant>>,
+    pub counters: &'a Counters,
 }
 
 const MISS_RETRY: Duration = Duration::from_secs(3600);
@@ -40,7 +43,17 @@ const MISS_RETRY: Duration = Duration::from_secs(3600);
 pub struct DownReport {
     /// flake -> unresolved gap count across its manifests.
     pub gaps: HashMap<String, usize>,
+    /// (flake, branch) -> newest generation on the box.
+    pub newest: HashMap<(String, String), Newest>,
     pub fetched_paths: usize,
+}
+
+/// Freshness of a flake branch: when its newest generation was published, and
+/// when the box last stored a new one (manifest mtime, so it survives restarts).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Newest {
+    pub published: SystemTime,
+    pub arrived: SystemTime,
 }
 
 fn manifest_key(flake: &str, gen_id: &str) -> String {
@@ -97,6 +110,15 @@ impl Mirror<'_> {
             let Some(m) = self.store.load_manifest(&path)? else {
                 continue;
             };
+            let arrived = std::fs::metadata(&path).and_then(|md| md.modified());
+            if let (Ok(published), Ok(arrived)) = (m.time(), arrived) {
+                let e = report
+                    .newest
+                    .entry((flake.clone(), m.branch.clone()))
+                    .or_insert(Newest { published, arrived });
+                e.published = e.published.max(published);
+                e.arrived = e.arrived.max(arrived);
+            }
             let mut unresolved = 0;
             for path in self.store.gaps(&m) {
                 let hash = store_hash_of(&path);
@@ -126,7 +148,7 @@ impl Mirror<'_> {
     fn fetch_path(&self, store_path: &str) -> Result<bool> {
         let hash = store_hash_of(store_path);
         let narinfo_key = format!("{hash}.narinfo");
-        for source in self.sources() {
+        for (i, source) in self.sources().into_iter().enumerate() {
             let Some(raw) = source.get(&narinfo_key)? else {
                 continue;
             };
@@ -158,13 +180,20 @@ impl Mirror<'_> {
                 .url
                 .strip_prefix("nar/")
                 .with_context(|| format!("unexpected nar URL {}", info.url))?;
-            self.store.put_nar(file, &mut nar)?;
+            let n = self.store.put_nar(file, &mut nar)?;
+            let bytes = if i == 0 {
+                &self.counters.bytes_down_remote
+            } else {
+                &self.counters.bytes_down_upstream
+            };
+            bytes.fetch_add(n, Ordering::Relaxed);
             self.store.put_narinfo(&info, &raw)?; // nar first: index never dangles
             return Ok(true);
         }
         Ok(false)
     }
 
+    /// The remote first: `fetch_path` counts index 0 as remote bytes.
     fn sources(&self) -> Vec<Box<dyn ObjectSource + '_>> {
         let mut v: Vec<Box<dyn ObjectSource>> = vec![Box::new(RemoteSource(self.remote))];
         for up in &self.upstreams {
@@ -223,6 +252,9 @@ impl Mirror<'_> {
             let nar = std::fs::read(self.store.nar_path(file)?)
                 .with_context(|| format!("local nar {file}"))?;
             self.remote.put(&info.url, &nar)?;
+            self.counters
+                .bytes_up
+                .fetch_add(nar.len() as u64, Ordering::Relaxed);
             self.remote.put(&key, raw.as_bytes())?; // nar first, narinfo second
             tracing::info!(hash, "mirrored up");
         }
@@ -350,6 +382,7 @@ References: \n"
             keys,
             agent: ureq::Agent::new_with_defaults(),
             misses: Default::default(),
+            counters: Box::leak(Box::default()),
         }
     }
 
@@ -380,6 +413,12 @@ References: \n"
         assert!(store.has(&ha));
         assert_eq!(report.fetched_paths, 1);
         assert_eq!(report.gaps["znix"], 1);
+        let newest = report.newest[&("znix".to_string(), "main".to_string())];
+        assert_eq!(
+            newest.published,
+            humantime::parse_rfc3339("2026-08-20T10:00:00Z").unwrap()
+        );
+        assert!(m.counters.bytes_down_remote.load(Ordering::Relaxed) > 0);
 
         // Second cycle: idempotent, gap still quietly reported.
         let report = m.down().unwrap();
@@ -526,6 +565,7 @@ References: \n"
             token: None,
             status: std::sync::Mutex::new(crate::server::Status::default()),
             counters: Default::default(),
+            ages: Default::default(),
         });
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());
@@ -546,6 +586,7 @@ References: \n"
             keys: &keys,
             agent: ureq::Agent::new_with_defaults(),
             misses: Default::default(),
+            counters: Box::leak(Box::default()),
         };
         let report = m.down().unwrap();
         assert_eq!(report.fetched_paths, 1);

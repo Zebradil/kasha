@@ -297,6 +297,19 @@ impl Store {
         Ok(out)
     }
 
+    /// mtime and size of every nar object (age metrics input).
+    pub fn nar_stats(&self) -> Result<Vec<(SystemTime, u64)>> {
+        let mut out = Vec::new();
+        for e in fs::read_dir(self.root.join("nar"))? {
+            let e = e?;
+            if e.file_name().to_str().is_some_and(|n| !n.starts_with('.')) {
+                let m = e.metadata()?;
+                out.push((m.modified()?, m.len()));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn remove_nar(&self, file: &str) -> Result<()> {
         let p = self.nar_path(file)?;
         if p.exists() {

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::manifest::Manifest;
@@ -27,6 +27,8 @@ use crate::store::Store;
 pub struct Status {
     /// flake -> (last sync, gap count).
     pub flakes: HashMap<String, (SystemTime, usize)>,
+    /// (flake, branch) -> newest generation on the box.
+    pub generations: HashMap<(String, String), crate::mirror::Newest>,
     pub pending_mirror_up: usize,
 }
 
@@ -40,6 +42,61 @@ pub struct Counters {
     pub ingest_rejected: AtomicU64,
     pub ingest_unauthorized: AtomicU64,
     pub sweep_deleted: AtomicU64,
+    /// NAR bytes by direction; mirror-down split by source.
+    pub bytes_down_remote: AtomicU64,
+    pub bytes_down_upstream: AtomicU64,
+    pub bytes_up: AtomicU64,
+    pub bytes_served: AtomicU64,
+    pub bytes_ingested: AtomicU64,
+}
+
+/// How long an age scan of `nar/` is reused across scrapes.
+const AGE_SCAN_TTL: Duration = Duration::from_secs(300);
+
+/// Upper bounds of the NAR age buckets, in seconds.
+const AGE_BUCKETS: [u64; 11] = [
+    3600,
+    6 * 3600,
+    86400,
+    3 * 86400,
+    7 * 86400,
+    14 * 86400,
+    30 * 86400,
+    60 * 86400,
+    90 * 86400,
+    180 * 86400,
+    365 * 86400,
+];
+
+/// NARs on disk bucketed by age (time since the box stored them).
+#[derive(Default)]
+pub struct AgeStats {
+    /// Per `AGE_BUCKETS` bound plus +Inf, non-cumulative (count, bytes).
+    buckets: [(u64, u64); AGE_BUCKETS.len() + 1],
+    oldest: Option<SystemTime>,
+    newest: Option<SystemTime>,
+}
+
+impl AgeStats {
+    fn scan(store: &Store, now: SystemTime) -> Self {
+        let mut st = AgeStats::default();
+        let files = match store.nar_stats() {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, "nar age scan failed");
+                return st;
+            }
+        };
+        for (mtime, len) in files {
+            let age = now.duration_since(mtime).unwrap_or_default().as_secs();
+            let i = AGE_BUCKETS.partition_point(|&b| b < age);
+            st.buckets[i].0 += 1;
+            st.buckets[i].1 += len;
+            st.oldest = Some(st.oldest.map_or(mtime, |o| o.min(mtime)));
+            st.newest = Some(st.newest.map_or(mtime, |n| n.max(mtime)));
+        }
+        st
+    }
 }
 
 fn bump(c: &AtomicU64) {
@@ -53,9 +110,23 @@ pub struct App {
     pub token: Option<String>,
     pub status: Mutex<Status>,
     pub counters: Counters,
+    /// Last NAR age scan; walking `nar/` on every scrape is too much.
+    pub ages: Mutex<Option<(Instant, Arc<AgeStats>)>>,
 }
 
 impl App {
+    fn age_stats(&self) -> Arc<AgeStats> {
+        let mut cache = self.ages.lock().unwrap();
+        if let Some((at, st)) = cache.as_ref()
+            && at.elapsed() < AGE_SCAN_TTL
+        {
+            return st.clone();
+        }
+        let st = Arc::new(AgeStats::scan(&self.store, SystemTime::now()));
+        *cache = Some((Instant::now(), st.clone()));
+        st
+    }
+
     fn authorized(&self, req: &Request) -> bool {
         let Some(token) = &self.token else {
             return false;
@@ -184,14 +255,20 @@ impl Drop for Slot {
     }
 }
 
-fn respond<R: Read>(req: Request, resp: Response<R>) {
+/// Returns whether the response reached the client.
+fn respond<R: Read>(req: Request, resp: Response<R>) -> bool {
     let method = req.method().clone();
     let url = req.url().to_string();
     let code = resp.status_code().0;
-    if let Err(e) = req.respond(resp) {
-        tracing::debug!(error = %e, "client went away");
-    }
+    let sent = match req.respond(resp) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "client went away");
+            false
+        }
+    };
     tracing::debug!(%method, url, code, "request");
+    sent
 }
 
 fn text(code: u32, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -212,34 +289,38 @@ pub fn handle(app: &App, mut req: Request) {
                 let resp = text(401, "unauthorized").with_header(
                     Header::from_bytes("WWW-Authenticate", "Basic realm=\"kasha\"").unwrap(),
                 );
-                return respond(req, resp);
+                respond(req, resp);
+                return;
             }
             match ingest(app, &mut req, path) {
                 Ok(msg) => {
                     bump(&app.counters.ingest_accepted);
-                    respond(req, text(201, &msg))
+                    respond(req, text(201, &msg));
                 }
                 Err(e) => {
                     tracing::warn!(path, error = %e, "rejected ingest");
                     bump(&app.counters.ingest_rejected);
-                    respond(req, text(400, &format!("{e:#}")))
+                    respond(req, text(400, &format!("{e:#}")));
                 }
             }
         }
-        _ => respond(req, text(405, "method not allowed")),
+        _ => {
+            respond(req, text(405, "method not allowed"));
+        }
     }
 }
 
 fn respond_get(app: &App, req: Request, path: &str) {
     match path {
         "nix-cache-info" => {
-            return respond(
+            respond(
                 req,
                 text(
                     200,
                     "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 10\n",
                 ),
             );
+            return;
         }
         "status" => {
             let st = app.status.lock().unwrap();
@@ -254,7 +335,8 @@ fn respond_get(app: &App, req: Request, path: &str) {
             });
             let resp = Response::from_string(body.to_string())
                 .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
-            return respond(req, resp);
+            respond(req, resp);
+            return;
         }
         "metrics" => {
             let mut body = String::new();
@@ -262,7 +344,8 @@ fn respond_get(app: &App, req: Request, path: &str) {
             let resp = Response::from_string(body).with_header(
                 Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap(),
             );
-            return respond(req, resp);
+            respond(req, resp);
+            return;
         }
         _ => {}
     }
@@ -274,20 +357,30 @@ fn respond_get(app: &App, req: Request, path: &str) {
             &app.counters.narinfo_misses
         });
     }
+    // Only NAR bodies count as served bytes; narinfos are noise next to them.
+    let nar = *req.method() == Method::Get && path.starts_with("nar/");
     match file {
         Some(p) => match std::fs::File::open(&p) {
-            Ok(f) => respond(req, Response::from_file(f)),
+            Ok(f) => {
+                let len = f.metadata().map_or(0, |m| m.len());
+                if respond(req, Response::from_file(f)) && nar {
+                    app.counters.bytes_served.fetch_add(len, Ordering::Relaxed);
+                }
+            }
             Err(e) => {
                 tracing::error!(path, error = %e, "open failed");
-                respond(req, text(500, "io error"))
+                respond(req, text(500, "io error"));
             }
         },
-        None => respond(req, text(404, "not found")),
+        None => {
+            respond(req, text(404, "not found"));
+        }
     }
 }
 
 /// Prometheus text exposition (format 0.0.4). Leaves out `store_bytes`: it
-/// walks the whole store, which a scrape every few seconds should not do.
+/// walks the whole store, which a scrape every few seconds should not do. The
+/// NAR age scan only reads `nar/`, and is cached for `AGE_SCAN_TTL`.
 fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
     use std::fmt::Write;
     fn head(o: &mut String, name: &str, kind: &str, help: &str) -> std::fmt::Result {
@@ -331,6 +424,36 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         )?;
         for (f, (_, gaps)) in &st.flakes {
             writeln!(o, "kasha_flake_gaps{{flake=\"{}\"}} {gaps}", label(f))?;
+        }
+        head(
+            o,
+            "kasha_generation_published_timestamp_seconds",
+            "gauge",
+            "Manifest timestamp of the newest generation on the box, per flake and branch.",
+        )?;
+        for ((f, b), g) in &st.generations {
+            writeln!(
+                o,
+                "kasha_generation_published_timestamp_seconds{{flake=\"{}\",branch=\"{}\"}} {}",
+                label(f),
+                label(b),
+                secs(g.published)
+            )?;
+        }
+        head(
+            o,
+            "kasha_generation_arrived_timestamp_seconds",
+            "gauge",
+            "When the box last stored a new generation, per flake and branch.",
+        )?;
+        for ((f, b), g) in &st.generations {
+            writeln!(
+                o,
+                "kasha_generation_arrived_timestamp_seconds{{flake=\"{}\",branch=\"{}\"}} {}",
+                label(f),
+                label(b),
+                secs(g.arrived)
+            )?;
         }
     }
 
@@ -388,7 +511,69 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         o,
         "kasha_sweep_deleted_objects_total {}",
         n(&c.sweep_deleted)
-    )
+    )?;
+
+    head(
+        o,
+        "kasha_nar_bytes_total",
+        "counter",
+        "NAR bytes moved, by direction (down/up: mirror, served: to clients, ingest: pushed in).",
+    )?;
+    for (labels, v) in [
+        ("direction=\"down\",source=\"remote\"", &c.bytes_down_remote),
+        (
+            "direction=\"down\",source=\"upstream\"",
+            &c.bytes_down_upstream,
+        ),
+        ("direction=\"up\"", &c.bytes_up),
+        ("direction=\"served\"", &c.bytes_served),
+        ("direction=\"ingest\"", &c.bytes_ingested),
+    ] {
+        writeln!(o, "kasha_nar_bytes_total{{{labels}}} {}", n(v))?;
+    }
+
+    let ages = app.age_stats();
+    head(
+        o,
+        "kasha_nar_age_objects",
+        "gauge",
+        "NARs on disk by age since the box stored them (cumulative, le in seconds).",
+    )?;
+    let le = |i: usize| AGE_BUCKETS.get(i).map_or("+Inf".into(), u64::to_string);
+    let mut acc = 0;
+    for (i, (count, _)) in ages.buckets.iter().enumerate() {
+        acc += count;
+        writeln!(o, "kasha_nar_age_objects{{le=\"{}\"}} {acc}", le(i))?;
+    }
+    head(
+        o,
+        "kasha_nar_age_bytes",
+        "gauge",
+        "NAR bytes on disk by age since the box stored them (cumulative, le in seconds).",
+    )?;
+    let mut acc = 0;
+    for (i, (_, bytes)) in ages.buckets.iter().enumerate() {
+        acc += bytes;
+        writeln!(o, "kasha_nar_age_bytes{{le=\"{}\"}} {acc}", le(i))?;
+    }
+    // Absent on an empty store, like the sweep stamp.
+    if let (Some(oldest), Some(newest)) = (ages.oldest, ages.newest) {
+        head(
+            o,
+            "kasha_nar_oldest_timestamp_seconds",
+            "gauge",
+            "mtime of the oldest NAR on disk.",
+        )?;
+        writeln!(o, "kasha_nar_oldest_timestamp_seconds {}", secs(oldest))?;
+        head(
+            o,
+            "kasha_nar_newest_timestamp_seconds",
+            "gauge",
+            "mtime of the newest NAR on disk.",
+        )?;
+        writeln!(o, "kasha_nar_newest_timestamp_seconds {}", secs(newest))?;
+    }
+    Ok(())
 }
 
 /// Escape a Prometheus label value; flake names come from remote manifests.
@@ -439,6 +624,7 @@ fn ingest(app: &App, req: &mut Request, path: &str) -> Result<String> {
     }
     if let Some(file) = path.strip_prefix("nar/") {
         let n = app.store.put_nar(file, req.as_reader())?;
+        app.counters.bytes_ingested.fetch_add(n, Ordering::Relaxed);
         tracing::info!(file, bytes = n, "ingested nar");
         return Ok("nar stored".into());
     }
@@ -537,6 +723,7 @@ References: \n";
             token: Some("s3cret".into()),
             status: Mutex::new(Status::default()),
             counters: Counters::default(),
+            ages: Default::default(),
         });
         let base = spawn(app.clone());
         let agent = ureq::Agent::new_with_defaults();
@@ -660,9 +847,26 @@ References: \n";
                 2,
             ),
         );
-        let resp = agent.get(format!("{base}/metrics")).call().unwrap();
-        assert_eq!(resp.status(), 200);
-        let m = resp.into_body().read_to_string().unwrap();
+        app.status.lock().unwrap().generations.insert(
+            ("znix".into(), "main".into()),
+            crate::mirror::Newest {
+                published: UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
+                arrived: UNIX_EPOCH + std::time::Duration::from_secs(1_650_000_000),
+            },
+        );
+        // Served bytes are counted after the response is written, so the NAR
+        // GET's handler can still be finishing when the client has its body.
+        let served = "kasha_nar_bytes_total{direction=\"served\"} 8";
+        let mut m = String::new();
+        for _ in 0..50 {
+            let resp = agent.get(format!("{base}/metrics")).call().unwrap();
+            assert_eq!(resp.status(), 200);
+            m = resp.into_body().read_to_string().unwrap();
+            if m.lines().any(|l| l == served) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         for line in [
             "# TYPE kasha_objects gauge",
             "kasha_objects 1",
@@ -676,10 +880,20 @@ References: \n";
             "kasha_ingest_requests_total{result=\"rejected\"} 1",
             "kasha_ingest_requests_total{result=\"unauthorized\"} 1",
             "kasha_sweep_deleted_objects_total 0",
+            "kasha_generation_published_timestamp_seconds{flake=\"znix\",branch=\"main\"} 1600000000",
+            "kasha_generation_arrived_timestamp_seconds{flake=\"znix\",branch=\"main\"} 1650000000",
+            "# TYPE kasha_nar_bytes_total counter",
+            served,
+            "kasha_nar_bytes_total{direction=\"ingest\"} 9",
+            "kasha_nar_bytes_total{direction=\"down\",source=\"remote\"} 0",
+            "kasha_nar_age_objects{le=\"3600\"} 2",
+            "kasha_nar_age_objects{le=\"+Inf\"} 2",
+            "kasha_nar_age_bytes{le=\"+Inf\"} 9",
         ] {
             assert!(m.lines().any(|l| l == line), "missing {line:?} in:\n{m}");
         }
         assert!(!m.contains("kasha_last_sweep_timestamp_seconds"));
+        assert!(m.contains("kasha_nar_oldest_timestamp_seconds "));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

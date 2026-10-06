@@ -41,9 +41,19 @@ needs no authentication.
 | `kasha_ingest_requests_total{result}` | counter | pushes, `result` is `accepted`, `rejected` (bad content or signature) or `unauthorized` |
 | `kasha_last_sweep_timestamp_seconds` | gauge | start of the last box GC sweep attempt; absent until the first sweep |
 | `kasha_sweep_deleted_objects_total` | counter | narinfos and NARs the box GC deleted |
+| `kasha_generation_published_timestamp_seconds{flake,branch}` | gauge | `timestamp` of the newest manifest on the box for the branch: when its producer last published |
+| `kasha_generation_arrived_timestamp_seconds{flake,branch}` | gauge | when the box last stored a new manifest for the branch (the manifest file's mtime, so it survives restarts) |
+| `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients) or `ingest` (pushes) |
+| `kasha_nar_age_objects{le}` | gauge | NARs on disk stored at most `le` seconds ago, cumulative like a histogram |
+| `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
+| `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |
 
 Counters start at zero when the box restarts. `store_bytes` has no metric: it walks the whole store, which is too
-costly to repeat on every scrape; read it from `/status`.
+costly to repeat on every scrape; read it from `/status`. The NAR age metrics read only `nar/` and are rescanned at most
+every 5 minutes. Byte counters move when a transfer completes, so one large NAR shows as a spike rather than a plateau.
+
+The generation metrics and the `down`/`up` byte counters, like `last_sync`, need a remote cache: they come from the sync
+cycle. Last sync says the box checked; the generation timestamps say whether there was anything new to fetch.
 
 ```yaml
 scrape_configs:

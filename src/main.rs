@@ -104,6 +104,14 @@ enum Cmd {
         #[command(flatten)]
         policy: PolicyArgs,
     },
+    /// List the remote cache's generations with the verdict `gc` would apply.
+    Ls {
+        /// Remote cache as s3://bucket?endpoint=…&region=… (read-only creds suffice).
+        #[arg(long, env = "KASHA_REMOTE")]
+        remote: String,
+        #[command(flatten)]
+        policy: PolicyArgs,
+    },
     /// Run one box GC sweep now and exit; safe beside a running `serve`.
     Sweep {
         /// Store root (flat binary-cache layout).
@@ -112,6 +120,8 @@ enum Cmd {
     },
 }
 
+// Shared by `gc` and `ls`, so a listing predicts what a sweep with the same
+// flags keeps.
 #[derive(clap::Args)]
 struct PolicyArgs {
     /// Keep the N newest `main` generations per group [default: 5].
@@ -304,6 +314,60 @@ fn main() -> Result<()> {
                     if dry_run { "would delete " } else { "deleted " },
                     key
                 );
+            }
+            Ok(())
+        }
+
+        Cmd::Ls { remote, policy } => {
+            let s3 = S3Remote::from_url(&remote)?;
+            let now = SystemTime::now();
+            let mut listed = gc::remote_ls(&s3, &policy.policy(), now)?;
+            listed.sort_by(|a, b| match (&a.generation, &b.generation) {
+                (Some((x, _)), Some((y, _))) => (&x.flake, &x.branch, &x.attr, y.time)
+                    .cmp(&(&y.flake, &y.branch, &y.attr, x.time)),
+                _ => b
+                    .generation
+                    .is_some()
+                    .cmp(&a.generation.is_some())
+                    .then(a.key.cmp(&b.key)),
+            });
+            let rows: Vec<[String; 6]> = listed
+                .iter()
+                .map(|l| match &l.generation {
+                    Some((g, v)) => [
+                        match v {
+                            retention::Verdict::KeepAge => "keep:age",
+                            retention::Verdict::KeepCount => "keep:count",
+                            retention::Verdict::DropStale => "drop:stale",
+                            retention::Verdict::Drop => "drop",
+                        }
+                        .to_string(),
+                        format!(
+                            "{}d",
+                            now.duration_since(g.time).unwrap_or_default().as_secs() / 86400
+                        ),
+                        g.flake.clone(),
+                        g.branch.clone(),
+                        g.attr.clone(),
+                        l.key.clone(),
+                    ],
+                    None => ["garbage", "-", "-", "-", "-", &l.key].map(str::to_string),
+                })
+                .collect();
+            let header = ["VERDICT", "AGE", "FLAKE", "BRANCH", "ATTR", "KEY"].map(str::to_string);
+            let mut width = [0; 6];
+            for r in std::iter::once(&header).chain(&rows) {
+                for (w, c) in width.iter_mut().zip(r) {
+                    *w = (*w).max(c.len());
+                }
+            }
+            for r in std::iter::once(&header).chain(&rows) {
+                let line: Vec<String> = r
+                    .iter()
+                    .zip(width)
+                    .map(|(c, w)| format!("{c:w$}"))
+                    .collect();
+                println!("{}", line.join("  ").trim_end());
             }
             Ok(())
         }

@@ -12,12 +12,19 @@ Generations are grouped by `(flake, branch, attr)`. Within a group, a generation
 newest (by manifest `timestamp`), or younger than `M`. The branch `main` gets its own `N` and `M`; every other branch
 shares the other tier.
 
-| Sweep | `main` | other branches | Where it runs |
-| --- | --- | --- | --- |
-| Remote | `N=5`, `M=4 weeks` | `N=1`, `M=1 week` | `kasha gc`, from CI, with delete-capable credentials |
-| Box | `N=3`, count only | `N=1`, count only | inside `kasha serve`, every `KASHA_GC_INTERVAL`; on demand with `kasha sweep` |
+A group goes **stale** when its newest generation trails the newest generation of the same flake and tier by `S` or
+more. A stale group keeps only what the `M` rule keeps. This retires groups the flake has moved past: a renamed or
+removed attr, an old release tag, a one-off branch name. Staleness is measured against the flake, not the clock, so a
+flake that stops publishing keeps its newest generations; and against the tier, so pull-request churn never makes
+`main` stale.
 
-The remote defaults can be overridden per run with `kasha gc` flags; the box policy is fixed. Because the box keeps the
+| Sweep | `main` | other branches | Stale after | Where it runs |
+| --- | --- | --- | --- | --- |
+| Remote | `N=5`, `M=4 weeks` | `N=1`, `M=1 week` | `S=4 weeks` | `kasha gc`, from CI, with delete-capable credentials |
+| Box | `N=3`, count only | `N=1`, count only | never | inside `kasha serve`, every `KASHA_GC_INTERVAL`; on demand with `kasha sweep` |
+
+The remote defaults can be overridden per run with `kasha gc` flags, and `kasha ls` shows each generation's verdict
+under them; the box policy is fixed. Because the box keeps the
 newest 3 or 1 of what the remote keeps, and never more, a box never retains a generation the remote cache has dropped.
 
 ## Marking and sweeping

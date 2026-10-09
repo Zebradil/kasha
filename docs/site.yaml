@@ -36,11 +36,12 @@ flow:
     - { from: NixOS hosts, to: kasha box, label: "substitute: box → remote", arrow: back }
   note: Off the LAN, hosts fall back to the remote cache after a low connect timeout.
 components:
-  intro: One binary with three commands, a NixOS module for consumers, and a push script for producers.
+  intro: One binary with five commands, a NixOS module for consumers, and a push script for producers.
   items:
     - { name: kasha serve, body: "The box: cache server, mirror workers, GC timer." }
     - { name: kasha emit, body: Build and publish a v3 generation manifest. }
     - { name: kasha gc, body: Sweep the remote cache from CI. }
+    - { name: kasha ls, body: "List remote generations and what gc would keep." }
     - { name: nixosModules.consumer, body: "Box first, remote second, low connect-timeout." }
     - { name: kasha-cache-push, body: Resolve → sign → push → emit. }
     - { name: oci-image, body: "`ghcr.io/zebradil/kasha-box`" }

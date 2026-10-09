@@ -12,10 +12,10 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 
-use crate::manifest::Manifest;
+use crate::manifest::{Head, Manifest};
 use crate::narinfo::store_hash_of;
 use crate::remote::{Remote, fan_out};
-use crate::retention::{Gen, Policy, retain};
+use crate::retention::{Gen, Policy, Verdict, retain, verdicts};
 use crate::store::Store;
 
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
@@ -24,6 +24,10 @@ pub const GRACE: Duration = Duration::from_secs(24 * 3600);
 /// for minutes even fanned out. Report progress this often to keep a slow sweep
 /// distinguishable from a wedged one.
 const PROGRESS_EVERY: usize = 1000;
+
+/// Bytes `ls` reads per manifest; `kasha emit` headers fit with room to
+/// spare, and a longer one costs a full GET, not a wrong answer.
+const HEAD_BYTES: usize = 1024;
 
 #[derive(Debug, Default)]
 pub struct SweepReport {
@@ -156,23 +160,25 @@ pub fn remote_sweep(
     );
 
     // Retention over parseable v3 manifests; the rest of roots/ is garbage.
+    let read = fan_out(
+        &roots,
+        PROGRESS_EVERY,
+        "remote sweep: reading manifests",
+        |(key, t)| {
+            let m = remote.get(key)?.as_deref().map(Manifest::parse);
+            Ok((*key, *t, m))
+        },
+    )?;
     let mut gens = Vec::new();
     let mut manifests = Vec::new();
     let mut garbage_roots: Vec<(&str, SystemTime)> = Vec::new();
-    for (i, (key, t)) in roots.iter().enumerate() {
-        if i > 0 && i % PROGRESS_EVERY == 0 {
-            tracing::info!(
-                read = i,
-                total = roots.len(),
-                "remote sweep: reading manifests"
-            );
-        }
-        match remote.get(key)?.as_deref().map(Manifest::parse) {
+    for (key, t, m) in read {
+        match m {
             Some(Ok(m)) => {
                 gens.push(to_gen(key.to_string(), &m));
-                manifests.push((key.to_string(), *t, m));
+                manifests.push((key.to_string(), t, m));
             }
-            _ => garbage_roots.push((key, *t)),
+            _ => garbage_roots.push((key, t)),
         }
     }
     let keep = retain(&gens, policy, now);
@@ -259,6 +265,63 @@ pub fn remote_sweep(
         "remote sweep done"
     );
     Ok(report)
+}
+
+/// One manifest under `roots/`, with the verdict `remote_sweep` would apply
+/// under the same policy; `None` for an object it would delete as garbage.
+pub struct Listed {
+    pub key: String,
+    pub generation: Option<(Gen, Verdict)>,
+}
+
+/// Retention preview of the remote cache from manifest headers alone: one
+/// ranged GET per manifest instead of a full read plus a narinfo read per
+/// retained path. Trusts the header: a manifest whose closure fails
+/// validation shows a verdict here but is garbage to the sweep.
+pub fn remote_ls(remote: &dyn Remote, policy: &Policy, now: SystemTime) -> Result<Vec<Listed>> {
+    let roots = remote.list("roots/")?;
+    let heads = fan_out(
+        &roots,
+        PROGRESS_EVERY,
+        "ls: reading manifest headers",
+        |(key, _)| {
+            let head = match remote.get_prefix(key, HEAD_BYTES)? {
+                Some(b) if b.len() == HEAD_BYTES => match Head::from_prefix(&b) {
+                    Some(h) => Some(h),
+                    None => remote.get(key)?.as_deref().and_then(Head::from_prefix),
+                },
+                b => b.as_deref().and_then(Head::from_prefix),
+            };
+            Ok((key.clone(), head))
+        },
+    )?;
+    let mut gens = Vec::new();
+    let mut garbage = Vec::new();
+    for (key, head) in heads {
+        match head {
+            Some(h) => gens.push(Gen {
+                time: h.time().unwrap_or(SystemTime::UNIX_EPOCH),
+                id: key,
+                flake: h.flake,
+                branch: h.branch,
+                attr: h.attr,
+            }),
+            None => garbage.push(key),
+        }
+    }
+    let v = verdicts(&gens, policy, now);
+    Ok(gens
+        .into_iter()
+        .zip(v)
+        .map(|(g, v)| Listed {
+            key: g.id.clone(),
+            generation: Some((g, v)),
+        })
+        .chain(garbage.into_iter().map(|key| Listed {
+            key,
+            generation: None,
+        }))
+        .collect())
 }
 
 #[cfg(test)]
@@ -394,6 +457,52 @@ References: \n"
         // Idempotent second run deletes nothing.
         let again = remote_sweep(&remote, &Policy::remote(), now, GRACE, false).unwrap();
         assert!(again.deleted.is_empty());
+    }
+
+    #[test]
+    fn ls_agrees_with_the_sweep() {
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(100 * 86400);
+        let remote = FakeRemote::default();
+        let paths = [format!("/nix/store/{}-x", "a".repeat(32))];
+        for (gen_id, branch, days) in [
+            ("main-1", "main", 100),
+            ("feat-1", "feature", 100),
+            ("feat-2", "feature", 50),
+        ] {
+            remote.insert_at(
+                &format!("roots/znix/{gen_id}.json"),
+                &manifest_at(gen_id, branch, &paths, &ts(now, days)),
+                old,
+            );
+        }
+        remote.insert_at("roots/znix/bad.json", b"{}", old);
+
+        let listed = remote_ls(&remote, &Policy::remote(), now).unwrap();
+        let verdict = |key: &str| {
+            let l = listed.iter().find(|l| l.key == key).unwrap();
+            l.generation.as_ref().map(|(_, v)| *v)
+        };
+        assert_eq!(verdict("roots/znix/main-1.json"), Some(Verdict::KeepCount));
+        assert_eq!(verdict("roots/znix/feat-2.json"), Some(Verdict::KeepCount));
+        assert_eq!(verdict("roots/znix/feat-1.json"), Some(Verdict::Drop));
+        assert_eq!(verdict("roots/znix/bad.json"), None);
+
+        let report = remote_sweep(&remote, &Policy::remote(), now, GRACE, true).unwrap();
+        let mut dropped: Vec<&str> = listed
+            .iter()
+            .filter(|l| !l.generation.as_ref().is_some_and(|(_, v)| v.keeps()))
+            .map(|l| l.key.as_str())
+            .collect();
+        dropped.sort();
+        let mut swept: Vec<&str> = report
+            .deleted
+            .iter()
+            .map(String::as_str)
+            .filter(|k| k.starts_with("roots/"))
+            .collect();
+        swept.sort();
+        assert_eq!(dropped, swept);
     }
 
     #[test]

@@ -101,18 +101,16 @@ enum Cmd {
         /// Objects younger than this are never deleted.
         #[arg(long, default_value = "24")]
         grace_hours: u64,
-        /// Keep the N newest `main` generations per group [default: 5].
-        #[arg(long)]
-        main_keep: Option<usize>,
-        /// Also keep `main` generations younger than this many weeks [default: 4].
-        #[arg(long)]
-        main_age_weeks: Option<u32>,
-        /// Keep the N newest non-`main` generations per group [default: 1].
-        #[arg(long)]
-        other_keep: Option<usize>,
-        /// Also keep non-`main` generations younger than this many weeks [default: 1].
-        #[arg(long)]
-        other_age_weeks: Option<u32>,
+        #[command(flatten)]
+        policy: PolicyArgs,
+    },
+    /// List the remote cache's generations with the verdict `gc` would apply.
+    Ls {
+        /// Remote cache as s3://bucket?endpoint=…&region=… (read-only creds suffice).
+        #[arg(long, env = "KASHA_REMOTE")]
+        remote: String,
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
     /// Run one box GC sweep now and exit; safe beside a running `serve`.
     Sweep {
@@ -120,6 +118,51 @@ enum Cmd {
         #[arg(long, env = "KASHA_DATA", default_value = "/kasha")]
         data: String,
     },
+}
+
+// Shared by `gc` and `ls`, so a listing predicts what a sweep with the same
+// flags keeps.
+#[derive(clap::Args)]
+struct PolicyArgs {
+    /// Keep the N newest `main` generations per group [default: 5].
+    #[arg(long)]
+    main_keep: Option<usize>,
+    /// Also keep `main` generations younger than this many weeks [default: 4].
+    #[arg(long)]
+    main_age_weeks: Option<u32>,
+    /// Keep the N newest non-`main` generations per group [default: 1].
+    #[arg(long)]
+    other_keep: Option<usize>,
+    /// Also keep non-`main` generations younger than this many weeks [default: 1].
+    #[arg(long)]
+    other_age_weeks: Option<u32>,
+    /// Drop a group's count-retained generations once its newest one trails
+    /// the newest of its flake's tier (main or other) by this many weeks;
+    /// 0 disables [default: 4].
+    #[arg(long)]
+    stale_weeks: Option<u32>,
+}
+
+impl PolicyArgs {
+    fn policy(&self) -> Policy {
+        let mut p = Policy::remote();
+        if let Some(n) = self.main_keep {
+            p.main.keep_newest = n;
+        }
+        if let Some(w) = self.main_age_weeks {
+            p.main.max_age = retention::WEEK * w;
+        }
+        if let Some(n) = self.other_keep {
+            p.other.keep_newest = n;
+        }
+        if let Some(w) = self.other_age_weeks {
+            p.other.max_age = retention::WEEK * w;
+        }
+        if let Some(w) = self.stale_weeks {
+            p.stale_after = retention::WEEK * w;
+        }
+        p
+    }
 }
 
 fn parse_keys(s: &str) -> Result<Vec<PubKey>> {
@@ -255,28 +298,12 @@ fn main() -> Result<()> {
             remote,
             dry_run,
             grace_hours,
-            main_keep,
-            main_age_weeks,
-            other_keep,
-            other_age_weeks,
+            policy,
         } => {
-            let mut policy = Policy::remote();
-            if let Some(n) = main_keep {
-                policy.main.keep_newest = n;
-            }
-            if let Some(w) = main_age_weeks {
-                policy.main.max_age = retention::WEEK * w;
-            }
-            if let Some(n) = other_keep {
-                policy.other.keep_newest = n;
-            }
-            if let Some(w) = other_age_weeks {
-                policy.other.max_age = retention::WEEK * w;
-            }
             let s3 = S3Remote::from_url(&remote)?;
             let report = gc::remote_sweep(
                 &s3,
-                &policy,
+                &policy.policy(),
                 SystemTime::now(),
                 Duration::from_secs(grace_hours * 3600),
                 dry_run,
@@ -287,6 +314,60 @@ fn main() -> Result<()> {
                     if dry_run { "would delete " } else { "deleted " },
                     key
                 );
+            }
+            Ok(())
+        }
+
+        Cmd::Ls { remote, policy } => {
+            let s3 = S3Remote::from_url(&remote)?;
+            let now = SystemTime::now();
+            let mut listed = gc::remote_ls(&s3, &policy.policy(), now)?;
+            listed.sort_by(|a, b| match (&a.generation, &b.generation) {
+                (Some((x, _)), Some((y, _))) => (&x.flake, &x.branch, &x.attr, y.time)
+                    .cmp(&(&y.flake, &y.branch, &y.attr, x.time)),
+                _ => b
+                    .generation
+                    .is_some()
+                    .cmp(&a.generation.is_some())
+                    .then(a.key.cmp(&b.key)),
+            });
+            let rows: Vec<[String; 6]> = listed
+                .iter()
+                .map(|l| match &l.generation {
+                    Some((g, v)) => [
+                        match v {
+                            retention::Verdict::KeepAge => "keep:age",
+                            retention::Verdict::KeepCount => "keep:count",
+                            retention::Verdict::DropStale => "drop:stale",
+                            retention::Verdict::Drop => "drop",
+                        }
+                        .to_string(),
+                        format!(
+                            "{}d",
+                            now.duration_since(g.time).unwrap_or_default().as_secs() / 86400
+                        ),
+                        g.flake.clone(),
+                        g.branch.clone(),
+                        g.attr.clone(),
+                        l.key.clone(),
+                    ],
+                    None => ["garbage", "-", "-", "-", "-", &l.key].map(str::to_string),
+                })
+                .collect();
+            let header = ["VERDICT", "AGE", "FLAKE", "BRANCH", "ATTR", "KEY"].map(str::to_string);
+            let mut width = [0; 6];
+            for r in std::iter::once(&header).chain(&rows) {
+                for (w, c) in width.iter_mut().zip(r) {
+                    *w = (*w).max(c.len());
+                }
+            }
+            for r in std::iter::once(&header).chain(&rows) {
+                let line: Vec<String> = r
+                    .iter()
+                    .zip(width)
+                    .map(|(c, w)| format!("{c:w$}"))
+                    .collect();
+                println!("{}", line.join("  ").trim_end());
             }
             Ok(())
         }

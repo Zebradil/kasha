@@ -81,7 +81,8 @@ published build:
 
 `branch` defaults to `pr` on pull request events and to `GITHUB_REF_NAME` otherwise, and `gen` to
 `<branch>-<7-char sha>-<attr>`, both sanitized to `A-Za-z0-9_.-`. All pull requests share the `pr` branch because
-retention always keeps a group's newest generation: one group per pull request would never shrink. The action outputs the `gen`, `branch` and `manifest-key` it used.
+retention keeps a group's newest generation until the group goes stale: one group per pull request would pin a closure
+per pull request for weeks after it closed. The action outputs the `gen`, `branch` and `manifest-key` it used.
 
 ## Option C: kasha emit
 

@@ -60,6 +60,47 @@ impl Manifest {
     }
 }
 
+/// A manifest's fields minus `closure`, which is nearly all of its bytes.
+#[derive(Debug, Deserialize)]
+pub struct Head {
+    pub version: u32,
+    pub flake: String,
+    #[serde(rename = "gen")]
+    pub gen_id: String,
+    pub branch: String,
+    pub attr: String,
+    pub timestamp: String,
+}
+
+impl Head {
+    /// Parse from the first bytes of a manifest. `kasha emit` serializes
+    /// `closure` last, so a prefix reaching it holds every other field; a
+    /// whole object parses in any field order. None when the prefix is not
+    /// enough or the fields fail validation; the caller can then retry with
+    /// the whole object.
+    pub fn from_prefix(bytes: &[u8]) -> Option<Self> {
+        const CUT: &[u8] = b",\"closure\"";
+        let cut = bytes
+            .windows(CUT.len())
+            .position(|w| w == CUT)
+            .and_then(|i| serde_json::from_slice(&[&bytes[..i], b"}"].concat()).ok());
+        cut.or_else(|| serde_json::from_slice::<Head>(bytes).ok())?
+            .valid()
+    }
+
+    fn valid(self) -> Option<Self> {
+        let filled = [&self.flake, &self.gen_id, &self.branch, &self.attr]
+            .iter()
+            .all(|f| !f.is_empty());
+        (self.version == 3 && filled && self.time().is_ok()).then_some(self)
+    }
+
+    pub fn time(&self) -> Result<SystemTime> {
+        humantime::parse_rfc3339(&self.timestamp)
+            .with_context(|| format!("manifest timestamp {:?}", self.timestamp))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +124,23 @@ mod tests {
         let back = Manifest::parse(&bytes).unwrap();
         assert_eq!(back.gen_id, m.gen_id);
         assert_eq!(back.time().unwrap(), m.time().unwrap());
+    }
+
+    #[test]
+    fn head_from_prefix() {
+        let bytes = serde_json::to_vec(&base()).unwrap();
+        let cut = bytes.windows(9).position(|w| w == b"\"closure\"").unwrap() + 15;
+        let head = Head::from_prefix(&bytes[..cut]).unwrap();
+        assert_eq!(
+            (head.branch.as_str(), head.attr.as_str()),
+            ("main", base().attr.as_str())
+        );
+        // Prefix ends before `closure`: not enough to tell, caller retries whole.
+        assert!(Head::from_prefix(&bytes[..40]).is_none());
+        assert!(Head::from_prefix(&bytes).is_some());
+        let mut v2 = base();
+        v2.version = 2;
+        assert!(Head::from_prefix(&serde_json::to_vec(&v2).unwrap()).is_none());
     }
 
     #[test]

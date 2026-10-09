@@ -1,10 +1,12 @@
 //! Retention selector shared by box GC and remote sweep.
 //!
-//! Policy (ADR-0008): retain a generation if it has fewer
+//! Policy (ADR-0008, ADR-0010): retain a generation if it has fewer
 //! than N newer generations in its (flake, branch, attr) group, OR it is
-//! younger than M. Box marking uses counts only (M = zero).
+//! younger than M. Count retention lapses once the group is stale: its newest
+//! generation trails the newest of its flake's tier (main or other) by S.
+//! Box marking uses counts only (M = S = zero).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, Copy)]
@@ -17,6 +19,9 @@ pub struct GroupPolicy {
 pub struct Policy {
     pub main: GroupPolicy,
     pub other: GroupPolicy,
+    /// Zero disables. Measured against the flake's own tier, not the clock,
+    /// so a flake that stops publishing keeps its newest generations.
+    pub stale_after: Duration,
 }
 
 pub const WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -33,6 +38,7 @@ impl Policy {
                 keep_newest: 1,
                 max_age: WEEK,
             },
+            stale_after: 4 * WEEK,
         }
     }
 
@@ -48,6 +54,7 @@ impl Policy {
                 keep_newest: 1,
                 max_age: Duration::ZERO,
             },
+            stale_after: Duration::ZERO,
         }
     }
 }
@@ -61,32 +68,71 @@ pub struct Gen {
     pub time: SystemTime,
 }
 
-/// Ids of the generations to retain.
-pub fn retain(gens: &[Gen], policy: &Policy, now: SystemTime) -> HashSet<String> {
-    let mut groups: std::collections::HashMap<(&str, &str, &str), Vec<&Gen>> =
-        std::collections::HashMap::new();
-    for g in gens {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    KeepAge,
+    KeepCount,
+    /// Among the newest N, but the group is stale.
+    DropStale,
+    Drop,
+}
+
+impl Verdict {
+    pub fn keeps(self) -> bool {
+        matches!(self, Verdict::KeepAge | Verdict::KeepCount)
+    }
+}
+
+/// One verdict per generation, in `gens` order.
+pub fn verdicts(gens: &[Gen], policy: &Policy, now: SystemTime) -> Vec<Verdict> {
+    let mut groups: HashMap<(&str, &str, &str), Vec<usize>> = HashMap::new();
+    let mut tier_newest: HashMap<(&str, bool), SystemTime> = HashMap::new();
+    for (i, g) in gens.iter().enumerate() {
         groups
             .entry((g.flake.as_str(), g.branch.as_str(), g.attr.as_str()))
             .or_default()
-            .push(g);
+            .push(i);
+        let t = tier_newest
+            .entry((g.flake.as_str(), g.branch == "main"))
+            .or_insert(g.time);
+        *t = (*t).max(g.time);
     }
-    let mut keep = HashSet::new();
-    for ((_, branch, _), mut group) in groups {
+    let mut out = vec![Verdict::Drop; gens.len()];
+    for ((flake, branch, _), mut group) in groups {
         let p = if branch == "main" {
             policy.main
         } else {
             policy.other
         };
-        group.sort_by_key(|g| std::cmp::Reverse(g.time));
-        for (idx, g) in group.iter().enumerate() {
-            let age = now.duration_since(g.time).unwrap_or(Duration::ZERO);
-            if idx < p.keep_newest || age < p.max_age {
-                keep.insert(g.id.clone());
-            }
+        group.sort_by_key(|&i| std::cmp::Reverse(gens[i].time));
+        let newest = gens[group[0]].time;
+        let lead = tier_newest[&(flake, branch == "main")]
+            .duration_since(newest)
+            .unwrap_or(Duration::ZERO);
+        let stale = !policy.stale_after.is_zero() && lead >= policy.stale_after;
+        for (idx, &i) in group.iter().enumerate() {
+            let age = now.duration_since(gens[i].time).unwrap_or(Duration::ZERO);
+            out[i] = if age < p.max_age {
+                Verdict::KeepAge
+            } else if idx >= p.keep_newest {
+                Verdict::Drop
+            } else if stale {
+                Verdict::DropStale
+            } else {
+                Verdict::KeepCount
+            };
         }
     }
-    keep
+    out
+}
+
+/// Ids of the generations to retain.
+pub fn retain(gens: &[Gen], policy: &Policy, now: SystemTime) -> HashSet<String> {
+    gens.iter()
+        .zip(verdicts(gens, policy, now))
+        .filter(|(_, v)| v.keeps())
+        .map(|(g, _)| g.id.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -153,6 +199,61 @@ mod tests {
         // Old, but each is the newest of its own (branch, attr) group.
         let keep = retain(&gens, &Policy::remote(), now);
         assert_eq!(keep.len(), 3);
+    }
+
+    #[test]
+    fn stale_groups_lose_count_retention() {
+        let now = SystemTime::now();
+        let gens = vec![
+            mk("live", "main", "a", 0, now),
+            mk("renamed", "main", "gone", 40, now), // trails main by 40d
+            mk("pr", "pr", "a", 0, now),
+            mk("tag", "v0.1.0", "a", 40, now), // trails the other tier by 40d
+        ];
+        let v = verdicts(&gens, &Policy::remote(), now);
+        assert_eq!(
+            v,
+            [
+                Verdict::KeepAge,
+                Verdict::DropStale,
+                Verdict::KeepAge,
+                Verdict::DropStale
+            ]
+        );
+    }
+
+    #[test]
+    fn staleness_is_relative_to_the_flake_tier_not_the_clock() {
+        let now = SystemTime::now();
+        let mut gens = vec![
+            // Dormant flake: nothing in 100 days, attrs within S of each other.
+            mk("a", "main", "a", 100, now),
+            mk("b", "main", "b", 110, now),
+        ];
+        // Other-tier churn never makes main stale.
+        gens.push(mk("pr", "pr", "a", 0, now));
+        let keep = retain(&gens, &Policy::remote(), now);
+        assert!(keep.contains("a") && keep.contains("b"));
+
+        let mut off = Policy::remote();
+        off.stale_after = Duration::ZERO;
+        let gens = vec![
+            mk("live", "main", "a", 0, now),
+            mk("renamed", "main", "gone", 400, now),
+        ];
+        assert!(retain(&gens, &off, now).contains("renamed"));
+    }
+
+    #[test]
+    fn staleness_never_overrides_age() {
+        let now = SystemTime::now();
+        let mut p = Policy::remote();
+        p.stale_after = WEEK;
+        let gens = vec![
+            mk("live", "main", "a", 0, now),
+            mk("young", "main", "gone", 10, now), // stale, but < M=4wk
+        ];
+        assert!(retain(&gens, &p, now).contains("young"));
     }
 
     #[test]

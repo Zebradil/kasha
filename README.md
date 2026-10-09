@@ -11,6 +11,7 @@ remote cache.
 - `kasha serve`: the box — binary-cache HTTP server, mirror-down/up workers, GC timer.
 - `kasha emit`: build and publish a v3 generation manifest (closure paths on stdin).
 - `kasha gc`: sweep the remote cache; run from CI with delete-capable credentials.
+- `kasha ls`: list the remote cache's generations with the verdict `kasha gc` would apply; read-only.
 - `kasha sweep`: run one box sweep now (e.g. `kubectl exec` into a running box) and exit.
 - `nixosModules.consumer`: host-scoped static substituter selection — box first, remote cache second, low
   `connect-timeout`.
@@ -136,7 +137,9 @@ GCs them until their manifest is confirmed present in the remote cache.
   time, so the timer counts its next interval from there.
 - **Remote sweep** runs from CI (`.github/workflows/gc.yml`) with delete-capable credentials the box never holds: retain a
   generation if it is younger than `M` or among the `N` newest in its group (defaults: main `N=5, M=4wk`, other
-  `N=1, M=1wk`; override with `--main-keep`, `--main-age-weeks`, `--other-keep`, `--other-age-weeks`). `--dry-run`
+  `N=1, M=1wk`; override with `--main-keep`, `--main-age-weeks`, `--other-keep`, `--other-age-weeks`). A group whose
+  newest generation trails the newest of its flake's tier by `--stale-weeks` (default 4) loses the `N` rule, so
+  renamed attrs and old tags expire (ADR-0010). `kasha ls` prints each generation's verdict without sweeping. `--dry-run`
   reports only. The workflow runs `ghcr.io/zebradil/kasha-box:edge` rather than building from source, so a gc change
   reaches the schedule only once the oci workflow has published it. Manifest and narinfo reads are one request per
   object, deletes go out in batches of up to 1000; progress is logged every 1000.

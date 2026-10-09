@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, bail};
 use rusty_s3::actions::{DeleteObjects, DeleteObjectsResponse, ObjectIdentifier};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
+use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -65,6 +66,14 @@ pub trait Remote: Send + Sync {
     /// Keys under a prefix with their LastModified stamps.
     fn list(&self, prefix: &str) -> Result<Vec<(String, SystemTime)>>;
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    /// The first `len` bytes of an object, for reading a manifest's header
+    /// without its closure.
+    fn get_prefix(&self, key: &str, len: usize) -> Result<Option<Vec<u8>>> {
+        Ok(self.get(key)?.map(|mut b| {
+            b.truncate(len);
+            b
+        }))
+    }
     /// Streaming variant for large objects (nars).
     fn get_stream(&self, key: &str) -> Result<Option<Box<dyn std::io::Read + '_>>>;
     fn exists(&self, key: &str) -> Result<bool>;
@@ -234,6 +243,32 @@ impl Remote for S3Remote {
         match with_retry("GET", key, || self.agent.get(url.as_str()).call()) {
             Ok(resp) => Ok(Some(Box::new(resp.into_body().into_reader()))),
             Err(e) if status_of(&e) == Some(404) => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("GET {key}")),
+        }
+    }
+
+    fn get_prefix(&self, key: &str, len: usize) -> Result<Option<Vec<u8>>> {
+        let url = self
+            .bucket
+            .get_object(Some(&self.creds), key)
+            .sign(SIGN_TTL);
+        // Presigned URLs sign only `host`, so an unsigned Range header is fine.
+        let range = format!("bytes=0-{}", len.saturating_sub(1));
+        match with_retry("GET", key, || {
+            self.agent.get(url.as_str()).header("range", &range).call()
+        }) {
+            Ok(resp) => {
+                // `take` covers an endpoint that ignores Range and answers 200.
+                let mut buf = Vec::new();
+                resp.into_body()
+                    .into_reader()
+                    .take(len as u64)
+                    .read_to_end(&mut buf)?;
+                Ok(Some(buf))
+            }
+            Err(e) if status_of(&e) == Some(404) => Ok(None),
+            // An empty object has no byte 0 to range over.
+            Err(e) if status_of(&e) == Some(416) => Ok(Some(Vec::new())),
             Err(e) => Err(e).with_context(|| format!("GET {key}")),
         }
     }

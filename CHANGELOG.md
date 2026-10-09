@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Zebradil/kasha/compare/v0.8.0...v0.9.0) (2026-10-09)
+
+
+### Features
+
+* **gc:** expire stale retention groups, add kasha ls, parallel manifest reads ([#86](https://github.com/Zebradil/kasha/issues/86)) ([4817194](https://github.com/Zebradil/kasha/commit/4817194871baf4daffb280a431946fefc8165094))
+
 ## [0.8.0](https://github.com/Zebradil/kasha/compare/v0.7.0...v0.8.0) (2026-10-06)
 
 

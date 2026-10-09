@@ -156,23 +156,25 @@ pub fn remote_sweep(
     );
 
     // Retention over parseable v3 manifests; the rest of roots/ is garbage.
+    let read = fan_out(
+        &roots,
+        PROGRESS_EVERY,
+        "remote sweep: reading manifests",
+        |(key, t)| {
+            let m = remote.get(key)?.as_deref().map(Manifest::parse);
+            Ok((*key, *t, m))
+        },
+    )?;
     let mut gens = Vec::new();
     let mut manifests = Vec::new();
     let mut garbage_roots: Vec<(&str, SystemTime)> = Vec::new();
-    for (i, (key, t)) in roots.iter().enumerate() {
-        if i > 0 && i % PROGRESS_EVERY == 0 {
-            tracing::info!(
-                read = i,
-                total = roots.len(),
-                "remote sweep: reading manifests"
-            );
-        }
-        match remote.get(key)?.as_deref().map(Manifest::parse) {
+    for (key, t, m) in read {
+        match m {
             Some(Ok(m)) => {
                 gens.push(to_gen(key.to_string(), &m));
-                manifests.push((key.to_string(), *t, m));
+                manifests.push((key.to_string(), t, m));
             }
-            _ => garbage_roots.push((key, *t)),
+            _ => garbage_roots.push((key, t)),
         }
     }
     let keep = retain(&gens, policy, now);

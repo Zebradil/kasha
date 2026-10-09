@@ -295,18 +295,20 @@ pub fn remote_ls(remote: &dyn Remote, policy: &Policy, now: SystemTime) -> Resul
             Ok((key.clone(), head))
         },
     )?;
-    let (gens, garbage): (Vec<_>, Vec<_>) = heads.into_iter().partition(|(_, h)| h.is_some());
-    let gens: Vec<Gen> = gens
-        .into_iter()
-        .filter_map(|(key, h)| h.map(|h| (key, h)))
-        .map(|(key, h)| Gen {
-            time: h.time().unwrap_or(SystemTime::UNIX_EPOCH),
-            id: key,
-            flake: h.flake,
-            branch: h.branch,
-            attr: h.attr,
-        })
-        .collect();
+    let mut gens = Vec::new();
+    let mut garbage = Vec::new();
+    for (key, head) in heads {
+        match head {
+            Some(h) => gens.push(Gen {
+                time: h.time().unwrap_or(SystemTime::UNIX_EPOCH),
+                id: key,
+                flake: h.flake,
+                branch: h.branch,
+                attr: h.attr,
+            }),
+            None => garbage.push(key),
+        }
+    }
     let v = verdicts(&gens, policy, now);
     Ok(gens
         .into_iter()
@@ -315,7 +317,7 @@ pub fn remote_ls(remote: &dyn Remote, policy: &Policy, now: SystemTime) -> Resul
             key: g.id.clone(),
             generation: Some((g, v)),
         })
-        .chain(garbage.into_iter().map(|(key, _)| Listed {
+        .chain(garbage.into_iter().map(|key| Listed {
             key,
             generation: None,
         }))

@@ -5,6 +5,12 @@ headline: Net-local Nix binary cache box.
 eyebrow: Nix binary cache · single static binary
 description: Serves signed Nix store paths at LAN speed, accepts authenticated `nix copy` pushes over HTTP, and mirrors generations to and from a durable S3-compatible remote cache.
 repo: https://github.com/Zebradil/kasha
+analytics:
+  script: https://stats.zebradil.dev/app.js
+  attributes:
+    data-website-id: 854c4581-1891-4ab7-a69a-bc38c20fc76b
+    # Counts only the published site, not local dev or preview builds.
+    data-domains: zebradil.github.io
 theme: porridge
 logo: { light: ./src/assets/logo.svg, dark: ./src/assets/logo-dark.svg }
 install:

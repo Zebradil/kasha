@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=node_modules/@zebradil/starlight-kit/schema/site.schema.json
+# yaml-language-server: $schema=node_modules/@zebradil/docs-kit/schema/site.schema.json
 name: kasha
 tagline: Net-local Nix binary cache box.
 headline: Net-local Nix binary cache box.

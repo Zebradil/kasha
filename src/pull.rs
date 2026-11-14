@@ -7,9 +7,13 @@
 //! worker pool, checked against `NarHash` and `NarSize`, and only then stored,
 //! followed by the narinfo; until then the narinfo lives in memory.
 //!
-//! Nothing else starts a fetch. `HEAD` reports what the store holds, so a
-//! pending path does not exist yet for `nix copy --to`, which then pushes it.
+//! Nothing else starts a fetch. `HEAD` reports what the store holds, and
 //! `GET nar/<file>` waits for a fetch of that file already in flight.
+//!
+//! A push goes through the same door: `nix copy --to` asks for the narinfo
+//! of every path with a GET before it uploads, so the box pulls the paths a
+//! source holds and the client skips them. Only paths no source has are
+//! uploaded.
 //!
 //! A push or mirror-down that stores the path first wins: the fetch is
 //! dropped and its download discarded. A client still holding the pending
@@ -35,8 +39,10 @@ pub struct Config {
     pub workers: usize,
     /// Cap on pending narinfos, each with its queued or running download.
     pub max_pending: usize,
-    /// Cap on requests waiting for an in-flight NAR. Each holds a request
-    /// slot of the server, and narinfo lookups need slots too.
+    /// Cap on requests held up by pull-through: narinfo requests during a
+    /// lookup and NAR requests waiting for a download. Each holds a request
+    /// slot of the server for as long as a source takes, and requests the
+    /// store can answer need slots too.
     pub max_waiters: usize,
     /// Bound on connecting to a source and on its narinfo answer.
     pub lookup_timeout: Duration,
@@ -84,6 +90,8 @@ pub struct Stats {
     pub negative: AtomicU64,
     pub failed: AtomicU64,
     pub capped: AtomicU64,
+    /// Requests turned away because `max_waiters` were already held up.
+    pub busy: AtomicU64,
     pub stored: AtomicU64,
     pub fetch_failed: AtomicU64,
     /// Fetches dropped because the path was stored by another route first.
@@ -153,14 +161,18 @@ enum Outcome {
     Abandoned,
 }
 
-/// Clears a lookup marker if the lookup unwinds, so waiters do not hang.
+/// Ends a lookup: frees the request's waiter slot and wakes the requests
+/// that wait for its outcome. Also when the lookup unwinds, so they do not
+/// hang on its marker.
 struct LookupGuard<'a>(&'a Pull, &'a str);
 
 impl Drop for LookupGuard<'_> {
     fn drop(&mut self) {
-        if self.0.state.lock().unwrap().lookups.remove(self.1) {
-            self.0.done.notify_all();
-        }
+        let mut st = self.0.state.lock().unwrap();
+        st.lookups.remove(self.1);
+        st.waiters -= 1;
+        drop(st);
+        self.0.done.notify_all();
     }
 }
 
@@ -231,35 +243,38 @@ impl Pull {
             return None;
         }
         let mut st = self.state.lock().unwrap();
-        loop {
-            if let Some(p) = st.pending.get(hash) {
-                return Some(p.text.clone());
+        // Set once this request holds a waiter slot.
+        let mut held_up = false;
+        let answer = loop {
+            if let Some(answer) = self.answer_now(&mut st, hash) {
+                break Some(answer);
             }
-            // Stored since the caller looked, by a fetch that just ended.
-            // Disk, not the index: the index can still list a narinfo that
-            // `kasha sweep` deleted.
-            if let Ok(Some(stored)) = self.store.read_narinfo(hash) {
-                return Some(stored);
-            }
-            match st.negative.get(hash) {
-                Some(t) if t.elapsed() < self.cfg.negative_ttl => {
-                    bump(&self.stats.negative);
+            // From here the request waits on a source, for its own lookup
+            // or for another request's.
+            if !held_up {
+                if st.waiters >= self.cfg.max_waiters {
+                    bump(&self.stats.busy);
                     return None;
                 }
-                Some(_) => {
-                    st.negative.remove(hash);
-                }
-                None => {}
+                st.waiters += 1;
+                held_up = true;
             }
             if !st.lookups.contains(hash) {
-                break;
+                break None;
             }
             st = self.done.wait(st).unwrap();
-        }
+        };
         // Lookups count: each may turn into a pending narinfo.
-        if st.pending.len() + st.lookups.len() >= self.cfg.max_pending {
-            bump(&self.stats.capped);
-            return None;
+        let capped =
+            answer.is_none() && st.pending.len() + st.lookups.len() >= self.cfg.max_pending;
+        if answer.is_some() || capped {
+            if held_up {
+                st.waiters -= 1;
+            }
+            if capped {
+                bump(&self.stats.capped);
+            }
+            return answer.flatten();
         }
         st.lookups.insert(hash.to_string());
         drop(st);
@@ -267,7 +282,6 @@ impl Pull {
         let guard = LookupGuard(self, hash);
         let found = self.lookup(hash);
         let mut st = self.state.lock().unwrap();
-        st.lookups.remove(hash);
         let text = match found {
             Ok(p) => {
                 bump(&self.stats.found);
@@ -290,8 +304,32 @@ impl Pull {
         };
         drop(st);
         drop(guard);
-        self.done.notify_all();
         text
+    }
+
+    /// The answer when no source has to be asked: `Some(narinfo)` for a
+    /// pending or stored path, `None` for a remembered miss.
+    fn answer_now(&self, st: &mut State, hash: &str) -> Option<Option<String>> {
+        if let Some(p) = st.pending.get(hash) {
+            return Some(Some(p.text.clone()));
+        }
+        // Stored since the caller looked, by a fetch that just ended. Disk,
+        // not the index: the index can still list a narinfo that `kasha
+        // sweep` deleted.
+        if let Ok(Some(stored)) = self.store.read_narinfo(hash) {
+            return Some(Some(stored));
+        }
+        match st.negative.get(hash) {
+            Some(t) if t.elapsed() < self.cfg.negative_ttl => {
+                bump(&self.stats.negative);
+                Some(None)
+            }
+            Some(_) => {
+                st.negative.remove(hash);
+                None
+            }
+            None => None,
+        }
     }
 
     fn remember_miss(&self, st: &mut State, hash: &str) {
@@ -418,7 +456,11 @@ impl Pull {
             return;
         };
         let mut st = self.state.lock().unwrap();
-        if !st.files.contains_key(file) || st.waiters >= self.cfg.max_waiters {
+        if !st.files.contains_key(file) {
+            return;
+        }
+        if st.waiters >= self.cfg.max_waiters {
+            bump(&self.stats.busy);
             return;
         }
         st.waiters += 1;
@@ -569,10 +611,19 @@ fn extension(compression: &str) -> Option<&'static str> {
     }
 }
 
+/// Memory one xz decoder may use. Covers every xz preset (the largest
+/// needs 65 MiB); a source cannot make a worker allocate more with a huge
+/// dictionary.
+const XZ_MEMORY: u64 = 128 * 1024 * 1024;
+
 fn decoder<'a>(compression: &str, r: impl Read + 'a) -> Result<Box<dyn Read + 'a>> {
     Ok(match compression {
         "none" => Box::new(r),
-        "xz" => Box::new(liblzma::read::XzDecoder::new_multi_decoder(r)),
+        "xz" => {
+            use liblzma::stream::{CONCATENATED, Stream};
+            let stream = Stream::new_stream_decoder(XZ_MEMORY, CONCATENATED)?;
+            Box::new(liblzma::read::XzDecoder::new_stream(r, stream))
+        }
         "zstd" => Box::new(zstd::stream::read::Decoder::new(r)?),
         "bzip2" => Box::new(bzip2::read::MultiBzDecoder::new(r)),
         other => bail!("unsupported compression {other}"),
@@ -1576,5 +1627,151 @@ Deriver: {hash}-pkg-{c}.drv\n",
                 "missing {line:?} in:\n{metrics}"
             );
         }
+    }
+
+    #[test]
+    fn content_addressed_path_needs_no_signature() {
+        let (up, base) = Upstream::start();
+        // An unsigned source tree, the way a flake input reaches a cache.
+        let nar = b"nar of a source tree ".repeat(200);
+        let nar_hash = Sha256::digest(&nar);
+        let path = crate::narinfo::source_path(&nar_hash, "source");
+        let hash = crate::narinfo::store_hash_of(&path).to_string();
+        let nar_hash = nix32_encode(&nar_hash);
+        let narinfo = format!(
+            "StorePath: {path}\n\
+URL: nar/upstream-source.nar.zst\n\
+Compression: zstd\n\
+NarHash: sha256:{nar_hash}\n\
+NarSize: {}\n\
+References: \n\
+CA: fixed:r:sha256:{nar_hash}\n",
+            nar.len()
+        );
+        let o = Obj {
+            hash,
+            narinfo,
+            key: "nar/upstream-source.nar.zst".into(),
+            file: encode("zstd", &nar),
+            box_file: format!("{nar_hash}.nar.zst"),
+        };
+        up.add(&o);
+        let k = Kasha::pulling(&[&base], config());
+        assert_eq!(k.narinfo(&o).0, 200);
+        assert_eq!(k.get(&format!("nar/{}", o.box_file)), (200, o.file.clone()));
+        k.settle();
+        let stored = k.app.store.read_narinfo(&o.hash).unwrap().unwrap();
+        assert_eq!(field(&stored, "CA"), field(&o.narinfo, "CA"));
+        assert_eq!(field(&stored, "Sig"), None);
+        assert!(NarInfo::parse(&stored).unwrap().verify(&[]));
+
+        // The same narinfo over other contents is not that path.
+        let forged = object(&key(), 'a', "zstd");
+        let mut bad = Obj {
+            hash: forged.hash.clone(),
+            narinfo: o
+                .narinfo
+                .replace(&path, &format!("/nix/store/{}-source", forged.hash)),
+            ..forged
+        };
+        bad.narinfo = bad.narinfo.replace("upstream-source", "upstream-a");
+        up.add(&bad);
+        assert_refused(&up, &Kasha::pulling(&[&base], config()), &bad);
+    }
+
+    #[test]
+    fn concurrent_requests_for_one_path_share_one_lookup() {
+        let (up, base) = Upstream::start();
+        let o = object(&key(), 'a', "xz");
+        up.add(&o);
+        up.hold(&o.hash);
+        let k = Kasha::pulling(&[&base], config());
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..3 {
+            let (tx, url) = (tx.clone(), format!("{}/{}.narinfo", k.base, o.hash));
+            std::thread::spawn(move || {
+                let mut resp = client().get(url).call().unwrap();
+                let body = resp.body_mut().read_to_string().unwrap();
+                tx.send((resp.status().as_u16(), body)).unwrap();
+            });
+        }
+        let pull = k.app.pull.as_ref().unwrap();
+        eventually("all three requests to wait", || {
+            pull.state.lock().unwrap().waiters == 3
+        });
+        up.release();
+        let answers: Vec<_> = (0..3)
+            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
+        assert!(answers.iter().all(|a| a.0 == 200 && a.1 == answers[0].1));
+        assert_eq!(up.asked(&format!("GET {}.narinfo", o.hash)), 1);
+        k.settle();
+        assert_eq!(pull.state.lock().unwrap().waiters, 0);
+    }
+
+    #[test]
+    fn stuck_lookups_cannot_take_every_request_slot() {
+        let (up, base) = Upstream::start();
+        let objs = ['a', 'b', 'c'].map(|c| object(&key(), c, "xz"));
+        for o in &objs {
+            up.add(o);
+        }
+        // A source that accepts connections and never answers.
+        up.hold("");
+        let cfg = Config {
+            max_waiters: 2,
+            ..config()
+        };
+        let k = Kasha::pulling(&[&base], cfg);
+        let [a, b, c] = &objs;
+        let (tx, rx) = mpsc::channel();
+        for o in [a, b] {
+            let (tx, url) = (tx.clone(), format!("{}/{}.narinfo", k.base, o.hash));
+            std::thread::spawn(move || {
+                let resp = client().get(url).call().unwrap();
+                tx.send(resp.status().as_u16()).unwrap();
+            });
+        }
+        let pull = k.app.pull.as_ref().unwrap();
+        eventually("two lookups to be stuck", || {
+            pull.state.lock().unwrap().waiters == 2
+        });
+
+        // A third lookup is turned away at once, and the box keeps answering
+        // what it can answer itself.
+        assert_eq!(k.narinfo(c).0, 404);
+        assert_eq!(up.asked(&format!("GET {}.narinfo", c.hash)), 0);
+        assert_eq!(k.get("nix-cache-info").0, 200);
+        let (_, metrics) = k.get("metrics");
+        let busy = "kasha_pull_through_lookups_total{result=\"busy\"} 1";
+        assert!(
+            String::from_utf8(metrics)
+                .unwrap()
+                .lines()
+                .any(|l| l == busy)
+        );
+
+        // Nothing was remembered: once the source answers, so does the box.
+        up.release();
+        for _ in 0..2 {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 200);
+        }
+        assert_eq!(k.narinfo(c).0, 200);
+        k.settle();
+    }
+
+    #[test]
+    fn legacy_lzma_is_not_xz() {
+        let (up, base) = Upstream::start();
+        let o = object(&key(), 'a', "xz");
+        up.add(&o);
+        let nar = "nar of a ".repeat(500).into_bytes();
+        let options = liblzma::stream::LzmaOptions::new_preset(1).unwrap();
+        let stream = liblzma::stream::Stream::new_lzma_encoder(&options).unwrap();
+        let mut e = liblzma::write::XzEncoder::new_stream(Vec::new(), stream);
+        e.write_all(&nar).unwrap();
+        up.put(&o.key, &e.finish().unwrap());
+        let k = Kasha::pulling(&[&base], config());
+        assert_fetch_fails(&up, &k, &o);
     }
 }

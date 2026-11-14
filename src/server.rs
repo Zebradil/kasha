@@ -566,7 +566,7 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
             o,
             "kasha_pull_through_lookups_total",
             "counter",
-            "Narinfo misses handled by pull-through, by result (found: a source had it, miss: no source had it, negative: a remembered miss, failed: a source could not answer, capped: over the pending cap).",
+            "Narinfo misses handled by pull-through, by result (found: a source had it, miss: no source had it, negative: a remembered miss, failed: a source could not answer, capped: over the pending cap, busy: too many requests already wait on a source, NAR requests included).",
         )?;
         for (result, v) in [
             ("found", &p.found),
@@ -574,6 +574,7 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
             ("negative", &p.negative),
             ("failed", &p.failed),
             ("capped", &p.capped),
+            ("busy", &p.busy),
         ] {
             writeln!(
                 o,

@@ -241,6 +241,13 @@ fn make_store_path(ty: &str, hash: &[u8], name: &str) -> String {
     format!("{STORE_DIR}/{hash_part}-{name}")
 }
 
+/// The path of a source tree whose NAR hashes to `nar_hash`, the way nix
+/// names flake inputs and other `fixed:r:sha256` content.
+#[cfg(test)]
+pub fn source_path(nar_hash: &[u8], name: &str) -> String {
+    make_store_path("source", nar_hash, name)
+}
+
 /// Nix's base32: its own alphabet, least-significant bits first, written back
 /// to front — so a reversed string is plain LSB-first base32.
 fn nix32() -> Encoding {

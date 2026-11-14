@@ -285,8 +285,8 @@ fn main() -> Result<()> {
                     negative_ttl: Duration::from_secs(pull_through_negative_ttl_secs),
                     workers: pull_through_workers as usize,
                     max_pending: pull_through_max_pending as usize,
-                    // Half the request slots: NAR requests waiting on a fetch
-                    // must leave room for narinfo lookups.
+                    // Half the request slots: requests waiting on a source
+                    // must leave room for the ones the store can answer.
                     max_waiters: (max_inflight as usize / 2).max(1),
                     lookup_timeout: Duration::from_secs(pull_through_lookup_timeout_secs),
                     stall_timeout: Duration::from_secs(pull_through_stall_timeout_secs),

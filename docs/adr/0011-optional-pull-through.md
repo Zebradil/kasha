@@ -92,15 +92,17 @@ destination which paths it already has with a narinfo `GET` per path
 (`src/libstore/binary-cache-store.cc:296`, `386-391`). So the box pulls every pushed path
 that one of its sources holds, and the writer skips it; only paths no source has are
 uploaded. If such a background fetch then fails, the box lacks a path the writer believes
-it pushed, until mirror-down fills the gap for a manifest that lists it or a later push
-brings it. This is accepted for now; exempting authenticated requests is a possible later
-change, not decided here.
+it pushed. With a remote cache, mirror-down fills the gap once a manifest lists the path;
+without one, only a later push brings it. This is accepted for now; exempting
+authenticated requests is a possible later change, not decided here.
 
 The `HEAD` rule has a mirror image. A client that uses the box as the store it copies
-from, as `nix copy --from` does, first asks whether the path is valid
-(`src/nix/copy.cc:33`, `src/libstore/misc.cc:279-281`), which a binary cache answers with
-a `HEAD`, and so sees only stored paths. Substitution asks with a `GET`
-(`src/libstore/store-api.cc:479`, `src/libstore/build/substitution-goal.cc:76`).
+from, as `nix copy --from` does, builds the path in that store
+(`src/nix/copy.cc:33`, `src/libstore/build/entry-points.cc:51`), which first asks whether
+it is valid there (`src/libstore/build/substitution-goal.cc:36`). A binary cache answers
+that with a `HEAD`, so the client sees only stored paths, unless its narinfo cache
+already marks the path valid (`src/libstore/store-api.cc:544-562`). Substitution asks
+with a `GET` (`store-api.cc:479`, `substitution-goal.cc:76`).
 
 **What this supersedes.**
 

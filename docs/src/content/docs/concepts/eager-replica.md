@@ -49,11 +49,21 @@ Everything that does not end in a stored path is a `404`, which sends Nix to its
 - A source is down or too slow, a NAR fails its check, or the disk is full. Nothing is remembered; the next request
   tries again.
 - More than `KASHA_PULL_THROUGH_MAX_PENDING` paths are answered but not stored yet.
-- More than half of `KASHA_MAX_INFLIGHT` requests already wait for a download.
+- Half of `KASHA_MAX_INFLIGHT` requests already wait on a source, for a narinfo lookup or for a NAR download. The other
+  half stays free for requests the store can answer.
 
-Only a `GET` for a narinfo starts a fetch. `HEAD` reports what the store holds, so `nix copy --to` still pushes a path
-that is only pending. A path that a push or mirror-down stores first is kept as that route stored it, and the download
-is discarded. Pull-through never replaces a stored object and never triggers mirror-up.
+Only a `GET` for a narinfo starts a fetch; `HEAD` reports what the store holds. Two Nix commands meet that rule in ways
+worth knowing:
+
+- **`nix copy --to` a pull-through box** asks for the narinfo of every path with a `GET` before it uploads anything. The
+  box pulls each path one of its sources holds, and Nix skips those; only paths no source has are uploaded. If such a
+  download then fails, the box lacks a path the writer believes it pushed, until mirror-down fills the gap or a later
+  push brings it.
+- **`nix copy --from` a pull-through box** first asks whether the path is valid with a `HEAD`, so it sees only paths
+  the box already stores. Substitution, which is what a build does, asks with a `GET`.
+
+A path that a push or mirror-down stores first is kept as that route stored it, and the download is discarded.
+Pull-through never replaces a stored object and never triggers mirror-up.
 
 Two costs come with the mode. A client waiting for a NAR receives no bytes until the box has all of it; for a NAR that
 takes the box longer than Nix's `stalled-download-timeout` (300 seconds by default), Nix gives up and retries. And a

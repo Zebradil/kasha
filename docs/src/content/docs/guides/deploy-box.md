@@ -127,15 +127,15 @@ Before you enable it:
 - **Plan the disk.** Nothing evicts pulled-through paths by use yet, and anyone who can reach the box can make it
   download what its sources serve. A box without `KASHA_REMOTE` never sweeps on its own and grows until the volume is
   full. See [Retention and GC](../../concepts/retention/#pulled-through-paths).
-- **Size `KASHA_MAX_INFLIGHT` for waiting clients.** A request for a NAR that is still downloading holds a slot until
-  the download ends, and at most half of the slots may be held that way; further such requests get `404`. Nix opens up
-  to 25 connections per client.
+- **Size `KASHA_MAX_INFLIGHT` for waiting clients.** A request that waits on a source holds a slot until the source
+  answers: a narinfo request during its lookup, a NAR request until the download ends. At most half of the slots may be
+  held that way; further such requests get `404`. Nix opens up to 25 connections per client.
+- **Expect pushes to pull.** `nix copy --to` this box makes it pull every path a source holds instead of receiving it;
+  see [How the box works](../../concepts/eager-replica/#pull-through-on-a-miss).
 - **Raise `KASHA_PULL_THROUGH_MAX_PENDING`** if single jobs need closures of more paths than the cap. The paths past it
   are not lost: Nix fetches them from its next substituter, and the next job asks the box again.
 
 :::caution[Unverified]
-Checked by running `kasha serve --pull-through` on a workstation with `https://cache.nixos.org` as its only upstream
-and copying a path and its dependency through it with `nix copy --from`, twice. The image and the `docker run` line
-above were not run with the mode on. The NixOS VM test in `tests/v2.nix` covers a pull-through box in front of another
-box; it had not run on Linux when this page was written.
+The `docker run` above was not run with the mode on. The NixOS VM test in `tests/v2.nix` runs a pull-through box in
+front of another box, with a Nix client that substitutes through it.
 :::

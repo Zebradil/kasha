@@ -47,7 +47,7 @@ needs no authentication.
 | `kasha_nar_age_objects{le}` | gauge | NARs on disk stored at most `le` seconds ago, cumulative like a histogram |
 | `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
 | `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |
-| `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer) or `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) |
+| `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer), `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) or `busy` (half of `KASHA_MAX_INFLIGHT` requests already wait on a source; NAR requests turned away for that reason count here too) |
 | `kasha_pull_through_fetches_total{result}` | counter | background fetches ended: `stored`, `failed` or `abandoned` (a push or mirror-down stored the path first) |
 | `kasha_pull_through_pending` | gauge | paths answered whose NAR is not stored yet |
 | `kasha_pull_through_queued` | gauge | pending paths whose download has not started |

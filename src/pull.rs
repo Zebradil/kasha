@@ -1831,7 +1831,8 @@ Deriver: {hash}-pkg-{c}.drv\n",
         let k = Kasha::pulling(&[&base], config());
         let pull = k.app.pull.as_ref().unwrap();
 
-        // An old unlisted path whose NAR is the one `y` will reuse.
+        // An old unlisted path whose NAR is the one `y` will reuse: the
+        // whole path stays while the fetch is queued.
         let y = object(&key(), 'y', "xz");
         up.add(&y);
         let x = object(&key(), 'x', "none");
@@ -1872,7 +1873,8 @@ Deriver: {hash}-pkg-{c}.drv\n",
         let lru = crate::gc::Lru::new(1);
         let now = std::time::SystemTime::now();
         let r = crate::gc::evict(store, now, &lru, &|f| pull.busy(f)).unwrap();
-        assert_eq!(r.evicted, [format!("{}.narinfo", x.hash)]);
+        assert!(r.evicted.is_empty(), "evicted {:?}", r.evicted);
+        assert!(store.has(&x.hash));
         assert!(store.nar_path(&y.box_file).unwrap().exists());
 
         up.release();

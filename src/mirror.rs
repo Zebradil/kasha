@@ -194,7 +194,9 @@ impl Mirror<'_> {
                 };
                 bytes.fetch_add(n, Ordering::Relaxed);
             }
-            self.store.put_narinfo(&info, &raw)?; // nar first: index never dangles
+            // Nar first: index never dangles. Required, so a NAR removed since
+            // the check above leaves the path a gap, not a narinfo without it.
+            self.store.put_narinfo_of_stored_nar(&info, &raw)?;
             return Ok(true);
         }
         Ok(false)

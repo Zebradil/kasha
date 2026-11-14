@@ -15,6 +15,11 @@ R2) that every environment can reach from anywhere. The cross-environment hub of
 resort — every generation eventually lands here.
 _Avoid_: R2, the bucket, origin
 
+**Upstream cache**:
+A binary cache the box only reads from (e.g. `cache.nixos.org`). Unlike the remote cache it
+carries no generation manifests and the box never writes to it.
+_Avoid_: origin, mirror
+
 **Box**:
 A net-local binary cache instance reachable only from one physical network (e.g. home
 LAN). Holds a flat binary-cache store (same layout as the remote bucket, no nix
@@ -31,7 +36,14 @@ _Avoid_: Docker image, container (without box/image context)
 The box's sync model: it continuously pulls new generations *down* from the remote
 cache in the background (before anything asks for them) and mirrors locally-pushed
 generations *up* to the remote cache. Neither direction waits on a client request.
-_Avoid_: pull-through cache, mirror (ambiguous about direction)
+_Avoid_: pull-through cache (that is the separate **Pull-through** mode), mirror (ambiguous
+about direction)
+
+**Pull-through**:
+An optional box mode: a read for a path the box lacks is answered from the remote cache or
+an upstream cache instead of as a miss, and the box keeps the verified path for later reads.
+It works beside the eager bidirectional replica and never replaces it.
+_Avoid_: proxy, lazy mirror, on-demand mirroring
 
 **Generation manifest (v3)**:
 An object (`roots/<flake>/<gen>.json`) published by a writer (CI or a local push)

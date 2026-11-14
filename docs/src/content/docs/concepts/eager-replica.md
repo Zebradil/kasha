@@ -32,11 +32,12 @@ With the mode on, a `GET` for a narinfo the box lacks goes through these steps:
 1. The box asks its sources in order: the remote cache when it has one, then each upstream in `KASHA_UPSTREAMS`. The
    first narinfo that passes the [trust check](../trust-model/) and names the requested path wins.
 2. The box answers at once with its own rendering of that narinfo: the same fields and signatures, a `URL` it derives
-   from `NarHash`, and no `FileHash` or `FileSize` yet.
+   from `NarHash`, `Compression: zstd`, and no `FileHash` or `FileSize` yet.
 3. The NAR is downloaded from the same source in the background, on a pool of `KASHA_PULL_THROUGH_WORKERS` workers. A
    NAR a client is already waiting for is downloaded ahead of the others.
-4. The box decompresses the NAR and checks it against `NarHash` and `NarSize`. Only then does it store the NAR, and after
-   it the narinfo, now with the stored file's `FileHash` and `FileSize`.
+4. The box decompresses the NAR and checks it against `NarHash` and `NarSize`. Only then does it store the NAR, as zstd
+   whatever the source's encoding, and after it the narinfo, now with the stored file's `FileHash` and `FileSize`. A
+   NAR the source serves as zstd is stored as received.
 
 A `GET` for a NAR that is being downloaded waits and is served when the download completes. Nix asks for the narinfos
 of a whole closure before it downloads anything, so answering them early lets the box start every download while the
@@ -82,12 +83,14 @@ On disk the box holds the same flat binary-cache layout as the remote bucket:
 | Path | Content |
 | --- | --- |
 | `<hash>.narinfo` | one narinfo per store path, byte-identical as received; for a pulled-through path, the box's rendering |
-| `nar/…` | the NAR files narinfos point to |
+| `nar/…` | the NAR files narinfos point to, as received; for a pulled-through path, zstd |
 | `roots/<flake>/<gen>.json` | generation manifests |
 | `state/local-origin/`, `state/mirrored/` | markers for locally pushed generations |
 
-There is no Nix and no database on the box. At boot it rebuilds an in-memory index by scanning the narinfos. Objects
-are never recompressed.
+There is no Nix and no database on the box. At boot it rebuilds an in-memory index by scanning the narinfos. Only
+pull-through re-encodes a NAR, because zstd decodes several times faster than xz on every consumer; pushed and mirrored
+objects keep the encoding they arrived in, and objects stored earlier are served as they are. Rationale:
+[ADR-0012](https://github.com/Zebradil/kasha/blob/main/docs/adr/0012-pulled-through-nars-as-zstd.md).
 
 ## The sync cycle
 

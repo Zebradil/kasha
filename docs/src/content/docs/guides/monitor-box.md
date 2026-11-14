@@ -43,7 +43,7 @@ needs no authentication.
 | `kasha_sweep_deleted_objects_total` | counter | narinfos and NARs the box GC deleted |
 | `kasha_generation_published_timestamp_seconds{flake,branch}` | gauge | `timestamp` of the newest manifest on the box for the branch: when its producer last published |
 | `kasha_generation_arrived_timestamp_seconds{flake,branch}` | gauge | when the box last stored a new manifest for the branch (the manifest file's mtime, so it survives restarts) |
-| `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients), `ingest` (pushes) or `pull` (pull-through, `source` as for `down`) |
+| `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients), `ingest` (pushes) or `pull` (pull-through, `source` as for `down`; bytes as the source sent them, before re-encoding) |
 | `kasha_nar_age_objects{le}` | gauge | NARs on disk stored at most `le` seconds ago, cumulative like a histogram |
 | `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
 | `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |

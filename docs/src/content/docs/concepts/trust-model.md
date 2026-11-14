@@ -47,12 +47,13 @@ check above:
 - The NAR must decompress to exactly `NarSize` bytes that hash to `NarHash`. A corrupt or truncated download is dropped,
   not stored and served to every later consumer. The box can check `none`, `xz`, `zstd` and `bzip2`; a source that
   offers the path in another encoding is skipped.
-- The NAR is stored under a name derived from `NarHash`, never under the name the source gave it, and it never replaces
-  a stored object.
+- The NAR is stored as zstd under a name derived from `NarHash`, never under the name the source gave it, and it never
+  replaces a stored object. A file of that name already stored is reused only if it decodes to this NAR.
 
-The box rewrites four fields of a pulled-through narinfo: `URL`, `Compression`, `FileHash` and `FileSize`. Signatures
-cover the store path, `NarHash`, `NarSize` and the references, so they stay valid, and the box still signs nothing. An
-upstream whose key is not in `KASHA_TRUSTED_KEYS` can supply content-addressed paths only.
+The box rewrites four fields of a pulled-through narinfo, which describe the stored zstd file: `URL`, `Compression`,
+`FileHash` and `FileSize`. Signatures cover the store path, `NarHash`, `NarSize` and the references, so they stay valid,
+and the box still signs nothing. An upstream whose key is not in `KASHA_TRUSTED_KEYS` can supply content-addressed
+paths only.
 
 Rationale: [ADR-0011](https://github.com/Zebradil/kasha/blob/main/docs/adr/0011-optional-pull-through.md).
 

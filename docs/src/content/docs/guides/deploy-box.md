@@ -130,6 +130,8 @@ Before you enable it:
 - **Plan the disk.** Nothing evicts pulled-through paths by use yet, and anyone who can reach the box can make it
   download what its sources serve. A box without `KASHA_REMOTE` never sweeps on its own and grows until the volume is
   full. See [Retention and GC](../../concepts/retention/#pulled-through-paths).
+- **Budget CPU for the workers.** Each download is decoded to be checked and, unless the source serves zstd, encoded
+  again as zstd, on one core per busy worker.
 - **Size `KASHA_MAX_INFLIGHT` for NAR waits.** A request that waits on a source holds a slot until the source answers.
   A quarter of the slots may be held by narinfo requests during a lookup and another quarter by NAR requests waiting
   for a download; a request past its cap gets `404`. Lookups are short. NAR waits last as long as the download, and one

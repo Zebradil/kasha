@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, bail};
 use rusty_s3::actions::{DeleteObjects, DeleteObjectsResponse, ObjectIdentifier};
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
+use std::borrow::Cow;
 use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
@@ -209,8 +210,8 @@ impl Remote for S3Remote {
                 .context("list")?
                 .body_mut()
                 .read_to_string()?;
-            let parsed =
-                rusty_s3::actions::ListObjectsV2::parse_response(&text).context("list XML")?;
+            let parsed = rusty_s3::actions::ListObjectsV2::parse_response(&with_aws_list_ns(&text))
+                .context("list XML")?;
             for c in parsed.contents {
                 // Unknown age counts as fresh: GC only deletes objects past grace.
                 let t = c
@@ -354,6 +355,19 @@ impl Remote for S3Remote {
     }
 }
 
+/// Google Cloud Storage's XML API declares `ListBucketResult` in
+/// `http://doc.s3.amazonaws.com/2006-03-01`, which rusty-s3 rejects.
+fn with_aws_list_ns(xml: &str) -> Cow<'_, str> {
+    const ALT_NS: &str = "http://doc.s3.amazonaws.com/2006-03-01";
+    const AWS_NS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
+    // The root's xmlns precedes every key, so the first match is the namespace.
+    if xml.contains(ALT_NS) {
+        Cow::Owned(xml.replacen(ALT_NS, AWS_NS, 1))
+    } else {
+        Cow::Borrowed(xml)
+    }
+}
+
 /// Sign one batched `DeleteObjects` POST, returning the presigned URL, the XML
 /// body, and its Content-MD5. The body must be known before signing: S3 covers
 /// Content-MD5 in the signature, so it is built from a clone and signed after.
@@ -374,6 +388,23 @@ fn sign_delete_objects(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn parses_list_in_alternative_namespace() {
+        let xml = r#"<?xml version='1.0' encoding='UTF-8'?><ListBucketResult xmlns='http://doc.s3.amazonaws.com/2006-03-01'><Name>example-bucket</Name><Prefix>roots/</Prefix><NextContinuationToken>CglhLm5hcmluZm8=</NextContinuationToken><KeyCount>2</KeyCount><MaxKeys>2</MaxKeys><IsTruncated>true</IsTruncated><EncodingType>url</EncodingType><Contents><Key>roots/a.json</Key><Generation>1700000000000001</Generation><MetaGeneration>1</MetaGeneration><LastModified>2024-01-02T03:04:05.678Z</LastModified><ETag>"d41d8cd98f00b204e9800998ecf8427e"</ETag><Size>0</Size></Contents><Contents><Key>roots/b+c%2Bd.json</Key><Generation>1700000000000002</Generation><MetaGeneration>1</MetaGeneration><LastModified>2024-01-02T03:04:06.000Z</LastModified><ETag>"d41d8cd98f00b204e9800998ecf8427e"</ETag><Size>0</Size></Contents></ListBucketResult>"#;
+        let parsed =
+            rusty_s3::actions::ListObjectsV2::parse_response(&with_aws_list_ns(xml)).unwrap();
+        let keys: Vec<_> = parsed.contents.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["roots/a.json", "roots/b c+d.json"]);
+        assert_eq!(
+            parsed.next_continuation_token.as_deref(),
+            Some("CglhLm5hcmluZm8=")
+        );
+        assert!(matches!(
+            with_aws_list_ns("<ListBucketResult/>"),
+            Cow::Borrowed(_)
+        ));
+    }
 
     #[test]
     fn retries_rate_limits_then_succeeds() {

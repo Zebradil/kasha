@@ -109,7 +109,10 @@ docker run -d -p 5000:5000 -v kasha-data:/kasha \
 
 That box has no remote cache: it pulls through from `KASHA_UPSTREAMS`, `https://cache.nixos.org` by default. With
 `KASHA_REMOTE` set, the remote cache is asked first, at the cost of one more round trip before each upstream lookup.
-Consumers can list the box as their only substituter, or put it first.
+Consumers can list the box as their only substituter, or put it first. With the box as the only substituter, every
+`404` it answers means that consumer builds the path from source, or fails if it cannot: a path no source has, a source
+that is down, and a request turned away because too many already wait. Keep a second substituter behind the box unless
+that is what you want.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -127,15 +130,13 @@ Before you enable it:
 - **Plan the disk.** Nothing evicts pulled-through paths by use yet, and anyone who can reach the box can make it
   download what its sources serve. A box without `KASHA_REMOTE` never sweeps on its own and grows until the volume is
   full. See [Retention and GC](../../concepts/retention/#pulled-through-paths).
-- **Size `KASHA_MAX_INFLIGHT` for waiting clients.** A request that waits on a source holds a slot until the source
-  answers: a narinfo request during its lookup, a NAR request until the download ends. At most half of the slots may be
-  held that way; further such requests get `404`. Nix opens up to 25 connections per client.
+- **Size `KASHA_MAX_INFLIGHT` for NAR waits.** A request that waits on a source holds a slot until the source answers.
+  A quarter of the slots may be held by narinfo requests during a lookup and another quarter by NAR requests waiting
+  for a download; a request past its cap gets `404`. Lookups are short. NAR waits last as long as the download, and one
+  Nix client waits on up to 16 at once (`max-substitution-jobs`). The default of 256 lets 64 NAR requests wait, which
+  is four such clients; for more consumers fetching at the same time, set `KASHA_MAX_INFLIGHT` to at least 64 times
+  their number.
 - **Expect pushes to pull.** `nix copy --to` this box makes it pull every path a source holds instead of receiving it;
   see [How the box works](../../concepts/eager-replica/#pull-through-on-a-miss).
 - **Raise `KASHA_PULL_THROUGH_MAX_PENDING`** if single jobs need closures of more paths than the cap. The paths past it
   are not lost: Nix fetches them from its next substituter, and the next job asks the box again.
-
-:::caution[Unverified]
-The `docker run` above was not run with the mode on. The NixOS VM test in `tests/v2.nix` runs a pull-through box in
-front of another box, with a Nix client that substitutes through it.
-:::

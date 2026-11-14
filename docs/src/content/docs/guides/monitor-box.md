@@ -43,14 +43,23 @@ needs no authentication.
 | `kasha_sweep_deleted_objects_total` | counter | narinfos and NARs the box GC deleted |
 | `kasha_generation_published_timestamp_seconds{flake,branch}` | gauge | `timestamp` of the newest manifest on the box for the branch: when its producer last published |
 | `kasha_generation_arrived_timestamp_seconds{flake,branch}` | gauge | when the box last stored a new manifest for the branch (the manifest file's mtime, so it survives restarts) |
-| `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients) or `ingest` (pushes) |
+| `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients), `ingest` (pushes) or `pull` (pull-through, `source` as for `down`) |
 | `kasha_nar_age_objects{le}` | gauge | NARs on disk stored at most `le` seconds ago, cumulative like a histogram |
 | `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
 | `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |
+| `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer) or `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) |
+| `kasha_pull_through_fetches_total{result}` | counter | background fetches ended: `stored`, `failed` or `abandoned` (a push or mirror-down stored the path first) |
+| `kasha_pull_through_pending` | gauge | paths answered whose NAR is not stored yet |
+| `kasha_pull_through_queued` | gauge | pending paths whose download has not started |
 
 Counters start at zero when the box restarts. `store_bytes` has no metric: it walks the whole store, which is too
 costly to repeat on every scrape; read it from `/status`. The NAR age metrics read only `nar/` and are rescanned at most
 every 5 minutes. Byte counters move when a transfer completes, so one large NAR shows as a spike rather than a plateau.
+
+The `kasha_pull_through_*` metrics and the `pull` byte counters exist only on a box with pull-through on. A narinfo
+answered by pull-through counts as a `hit` in `kasha_narinfo_requests_total`. A `kasha_pull_through_queued` that stays
+high means the downloads cannot keep up: raise `KASHA_PULL_THROUGH_WORKERS`. A rising `failed` count is explained in
+the logs (`narinfo lookup failed`, `pull-through fetch failed`).
 
 The generation metrics and the `down`/`up` byte counters, like `last_sync`, need a remote cache: they come from the sync
 cycle. Last sync says the box checked; the generation timestamps say whether there was anything new to fetch.

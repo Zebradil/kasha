@@ -44,11 +44,33 @@ Environment contract (all also available as flags, see `kasha serve --help`):
 | `KASHA_TRUSTED_KEYS`                        | trusted narinfo signing keys (required)                                         | —                         |
 | `KASHA_TOKEN`                               | write token; writes refused when unset                                          | —                         |
 | `KASHA_REMOTE`                              | remote cache `s3://bucket?endpoint=…&region=…`; mirroring and GC off when unset | —                         |
-| `KASHA_UPSTREAMS`                           | upstream substituters tried after the remote                                    | `https://cache.nixos.org` |
+| `KASHA_UPSTREAMS`                           | upstream caches tried after the remote, by mirror-down and pull-through         | `https://cache.nixos.org` |
 | `KASHA_SYNC_INTERVAL` / `KASHA_GC_INTERVAL` | worker intervals, seconds                                                       | `300` / `86400`           |
 | `KASHA_MAX_INFLIGHT`                        | cap on concurrent requests; each in-flight response holds a slot until it ends  | `256`                     |
+| `KASHA_PRIORITY`                            | `Priority` advertised in `nix-cache-info`; Nix asks lower numbers first         | `10`                      |
+| `KASHA_PULL_THROUGH`                        | fetch, verify and keep a path on a narinfo miss (see below)                     | off                       |
 
 The box needs read/write (never delete) remote credentials via `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+
+### Pull-through
+
+A box that serves many short-lived consumers, such as ephemeral build VMs that start every job with an empty store, can
+fetch what it lacks instead of answering `404`. With `KASHA_PULL_THROUGH=true`, a `GET` for a narinfo the box does not
+hold is looked up on the remote cache, then on each of `KASHA_UPSTREAMS`. The box answers the narinfo at once, downloads
+the NAR in the background, checks it against `NarHash` and `NarSize`, and stores both. Later consumers read the path
+from the box. It works without `KASHA_REMOTE`, and it needs each upstream's public key in `KASHA_TRUSTED_KEYS`.
+
+| Variable                            | Meaning                                                             | Default |
+| ----------------------------------- | ------------------------------------------------------------------- | ------- |
+| `KASHA_PULL_THROUGH_NEGATIVE_TTL`   | seconds a path no source has is answered `404` without asking again | `60`    |
+| `KASHA_PULL_THROUGH_WORKERS`        | concurrent NAR downloads                                            | `8`     |
+| `KASHA_PULL_THROUGH_MAX_PENDING`    | cap on paths answered but not stored yet; past it a miss is `404`   | `4096`  |
+| `KASHA_PULL_THROUGH_LOOKUP_TIMEOUT` | seconds a source gets to connect and to answer a narinfo lookup     | `10`    |
+| `KASHA_PULL_THROUGH_STALL_TIMEOUT`  | seconds a NAR download may receive nothing before it is dropped     | `60`    |
+
+Nothing bounds the disk a pull-through box uses yet: see
+[Retention and GC](docs/src/content/docs/concepts/retention.md#pulled-through-paths) before enabling it. Design:
+[ADR-0011](docs/adr/0011-optional-pull-through.md).
 
 ## Wire consumer selection into one host
 
@@ -71,8 +93,8 @@ Import `kasha.nixosModules.consumer` only in hosts that should use the LAN box.
 }
 ```
 
-Reads fall back to the remote cache within `connectTimeout` when the box is unreachable — the box serves 404 on miss and
-never proxies.
+Reads fall back to the remote cache within `connectTimeout` when the box is unreachable. The box serves 404 on a miss
+unless pull-through is on.
 
 ## Publish generations from CI
 
@@ -186,6 +208,3 @@ macOS builds are not published — CI has no darwin runner. `nix build .#kasha` 
 - Re-compression (objects stored byte-identical as received).
 - Mirror-up filtering (push everything the remote lacks).
 - mDNS discovery and localhost selection shim.
-
-Pull-through serving on a miss is decided as an optional mode in
-[ADR-0011](docs/adr/0011-optional-pull-through.md) and is not implemented yet.

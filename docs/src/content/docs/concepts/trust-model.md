@@ -8,8 +8,9 @@ kasha separates three things: who may **write** to a box, which paths the box **
 
 ## The box never signs
 
-Every path the box serves was signed before it reached the box: by CI, or by a developer's machine. The box stores
-narinfos byte-identical as received, so the original signatures reach every host that substitutes from it.
+Every path the box serves was signed before it reached the box: by CI, by a developer's machine, or by the cache it
+was pulled through from. The box stores pushed and mirrored narinfos byte-identical as received, and keeps every
+signature line of a pulled-through one, so the original signatures reach every host that substitutes from it.
 
 The box does hold read/write credentials for the remote cache, to mirror both ways. It deliberately does not hold a
 private signing key. It is the most exposed, always-on component; if it is compromised, the worst outcome is a desynced
@@ -20,7 +21,8 @@ Rationale: [ADR-0004](https://github.com/Zebradil/kasha/blob/main/docs/adr/0004-
 
 ## What the box accepts
 
-Every narinfo the box stores, whether pushed to it or fetched by mirror-down, must pass one of two checks:
+Every narinfo the box stores, whether pushed to it, fetched by mirror-down or pulled through, must pass one of two
+checks:
 
 - **Trusted signature.** A `Sig` line verifies (ed25519, over the narinfo fingerprint) against a key in
   `KASHA_TRUSTED_KEYS` with the same key name.
@@ -34,6 +36,25 @@ next. A malformed or unsupported `CA` fails the check rather than passing it.
 
 Neither rule lets anyone forge an input-addressed output: without a trusted key, the only paths that pass are ones whose
 path is derived from their own content.
+
+## What pull-through adds
+
+Reads are unauthenticated, and with [pull-through](../eager-replica/#pull-through-on-a-miss) on a read can make the box
+download and store a path. It can only be a path one of the box's sources serves, and it has to pass more than the
+check above:
+
+- The narinfo must name the path that was asked for. A source cannot answer a request for one path with another.
+- The NAR must decompress to exactly `NarSize` bytes that hash to `NarHash`. A corrupt or truncated download is dropped,
+  not stored and served to every later consumer. The box can check `none`, `xz`, `zstd` and `bzip2`; a source that
+  offers the path in another encoding is skipped.
+- The NAR is stored under a name derived from `NarHash`, never under the name the source gave it, and it never replaces
+  a stored object.
+
+The box rewrites four fields of a pulled-through narinfo: `URL`, `Compression`, `FileHash` and `FileSize`. Signatures
+cover the store path, `NarHash`, `NarSize` and the references, so they stay valid, and the box still signs nothing. An
+upstream whose key is not in `KASHA_TRUSTED_KEYS` can supply content-addressed paths only.
+
+Rationale: [ADR-0011](https://github.com/Zebradil/kasha/blob/main/docs/adr/0011-optional-pull-through.md).
 
 ## Writing is a separate gate
 

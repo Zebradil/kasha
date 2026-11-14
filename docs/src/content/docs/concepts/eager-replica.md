@@ -15,9 +15,52 @@ time and is no faster than reading the remote cache directly.
 
 The box is instead an **eager bidirectional replica**. It pulls new generations *down* before anyone asks for them, and
 mirrors locally pushed generations *up*. Neither direction waits on a client request. A read the box cannot answer gets
-`404`; the host's next substituter, the remote cache, answers instead. The box never proxies.
+`404`; the host's next substituter, the remote cache, answers instead.
 
 Rationale: [ADR-0001](https://github.com/Zebradil/kasha/blob/main/docs/adr/0001-eager-bidirectional-replica.md).
+
+## Pull-through on a miss
+
+That argument assumes one consumer that keeps what it fetched. A box that serves many short-lived consumers is
+different: ephemeral build VMs start every job with an empty store and fetch the same paths again and again, and most
+of those paths come from public caches that no generation manifest lists. For such a box the first request is the first
+of many, so kasha has an optional **pull-through** mode (`KASHA_PULL_THROUGH`, off by default). It runs beside the
+eager replica and replaces nothing.
+
+With the mode on, a `GET` for a narinfo the box lacks goes through these steps:
+
+1. The box asks its sources in order: the remote cache when it has one, then each upstream in `KASHA_UPSTREAMS`. The
+   first narinfo that passes the [trust check](../trust-model/) and names the requested path wins.
+2. The box answers at once with its own rendering of that narinfo: the same fields and signatures, a `URL` it derives
+   from `NarHash`, and no `FileHash` or `FileSize` yet.
+3. The NAR is downloaded from the same source in the background, on a pool of `KASHA_PULL_THROUGH_WORKERS` workers. A
+   NAR a client is already waiting for is downloaded ahead of the others.
+4. The box decompresses the NAR and checks it against `NarHash` and `NarSize`. Only then does it store the NAR, and after
+   it the narinfo, now with the stored file's `FileHash` and `FileSize`.
+
+A `GET` for a NAR that is being downloaded waits and is served when the download completes. Nix asks for the narinfos
+of a whole closure before it downloads anything, so answering them early lets the box start every download while the
+client is still asking.
+
+Everything that does not end in a stored path is a `404`, which sends Nix to its next substituter or to a build:
+
+- No source has the path. The box remembers that for `KASHA_PULL_THROUGH_NEGATIVE_TTL` seconds (60 by default) and
+  answers without asking again.
+- A source is down or too slow, a NAR fails its check, or the disk is full. Nothing is remembered; the next request
+  tries again.
+- More than `KASHA_PULL_THROUGH_MAX_PENDING` paths are answered but not stored yet.
+- More than half of `KASHA_MAX_INFLIGHT` requests already wait for a download.
+
+Only a `GET` for a narinfo starts a fetch. `HEAD` reports what the store holds, so `nix copy --to` still pushes a path
+that is only pending. A path that a push or mirror-down stores first is kept as that route stored it, and the download
+is discarded. Pull-through never replaces a stored object and never triggers mirror-up.
+
+Two costs come with the mode. A client waiting for a NAR receives no bytes until the box has all of it; for a NAR that
+takes the box longer than Nix's `stalled-download-timeout` (300 seconds by default), Nix gives up and retries. And a
+narinfo that was asked for is downloaded and stored even if no client ever requests its NAR.
+
+Set it up: [Deploy a box](../../guides/deploy-box/#6-serve-short-lived-consumers-with-pull-through). Rationale:
+[ADR-0011](https://github.com/Zebradil/kasha/blob/main/docs/adr/0011-optional-pull-through.md).
 
 ## The store is the database
 
@@ -25,7 +68,7 @@ On disk the box holds the same flat binary-cache layout as the remote bucket:
 
 | Path | Content |
 | --- | --- |
-| `<hash>.narinfo` | one narinfo per store path, byte-identical as received |
+| `<hash>.narinfo` | one narinfo per store path, byte-identical as received; for a pulled-through path, the box's rendering |
 | `nar/…` | the NAR files narinfos point to |
 | `roots/<flake>/<gen>.json` | generation manifests |
 | `state/local-origin/`, `state/mirrored/` | markers for locally pushed generations |

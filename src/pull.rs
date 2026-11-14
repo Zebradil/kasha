@@ -39,11 +39,14 @@ pub struct Config {
     pub workers: usize,
     /// Cap on pending narinfos, each with its queued or running download.
     pub max_pending: usize,
-    /// Cap on requests held up by pull-through: narinfo requests during a
-    /// lookup and NAR requests waiting for a download. Each holds a request
-    /// slot of the server for as long as a source takes, and requests the
-    /// store can answer need slots too.
-    pub max_waiters: usize,
+    /// Cap on narinfo requests held up by a lookup, their own or a shared
+    /// one. Each holds a request slot of the server for as long as the
+    /// sources take, and requests the store can answer need slots too.
+    pub max_lookups: usize,
+    /// Cap on NAR requests waiting for a download. Separate from
+    /// `max_lookups`: a NAR wait lasts minutes, a lookup milliseconds, and
+    /// under one cap either kind could crowd out the other.
+    pub max_nar_waiters: usize,
     /// Bound on connecting to a source and on its narinfo answer.
     pub lookup_timeout: Duration,
     /// Bound on a NAR download that receives nothing.
@@ -90,8 +93,12 @@ pub struct Stats {
     pub negative: AtomicU64,
     pub failed: AtomicU64,
     pub capped: AtomicU64,
-    /// Requests turned away because `max_waiters` were already held up.
+    /// Narinfo requests turned away because `max_lookups` were held up.
     pub busy: AtomicU64,
+    /// NAR requests that waited for a download.
+    pub nar_waited: AtomicU64,
+    /// NAR requests turned away because `max_nar_waiters` were waiting.
+    pub nar_busy: AtomicU64,
     pub stored: AtomicU64,
     pub fetch_failed: AtomicU64,
     /// Fetches dropped because the path was stored by another route first.
@@ -133,7 +140,10 @@ struct State {
     /// Store hashes no source had, with when that was learned.
     negative: HashMap<String, Instant>,
     negative_purged: Option<Instant>,
-    waiters: usize,
+    /// Narinfo requests held up by a lookup.
+    lookup_waiters: usize,
+    /// NAR requests waiting for a download.
+    nar_waiters: usize,
 }
 
 pub struct Pull {
@@ -170,7 +180,7 @@ impl Drop for LookupGuard<'_> {
     fn drop(&mut self) {
         let mut st = self.0.state.lock().unwrap();
         st.lookups.remove(self.1);
-        st.waiters -= 1;
+        st.lookup_waiters -= 1;
         drop(st);
         self.0.done.notify_all();
     }
@@ -245,6 +255,8 @@ impl Pull {
         let mut st = self.state.lock().unwrap();
         // Set once this request holds a waiter slot.
         let mut held_up = false;
+        // Set once it has waited for another request's lookup.
+        let mut shared = false;
         let answer = loop {
             if let Some(answer) = self.answer_now(&mut st, hash) {
                 break Some(answer);
@@ -252,16 +264,20 @@ impl Pull {
             // From here the request waits on a source, for its own lookup
             // or for another request's.
             if !held_up {
-                if st.waiters >= self.cfg.max_waiters {
+                if st.lookup_waiters >= self.cfg.max_lookups {
                     bump(&self.stats.busy);
                     return None;
                 }
-                st.waiters += 1;
+                st.lookup_waiters += 1;
                 held_up = true;
             }
             if !st.lookups.contains(hash) {
-                break None;
+                // The lookup it shared left no answer: a source failed. It
+                // shares that outcome too, rather than asking the sources
+                // again, one waiter after another.
+                break shared.then_some(None);
             }
+            shared = true;
             st = self.done.wait(st).unwrap();
         };
         // Lookups count: each may turn into a pending narinfo.
@@ -269,7 +285,7 @@ impl Pull {
             answer.is_none() && st.pending.len() + st.lookups.len() >= self.cfg.max_pending;
         if answer.is_some() || capped {
             if held_up {
-                st.waiters -= 1;
+                st.lookup_waiters -= 1;
             }
             if capped {
                 bump(&self.stats.capped);
@@ -459,17 +475,18 @@ impl Pull {
         if !st.files.contains_key(file) {
             return;
         }
-        if st.waiters >= self.cfg.max_waiters {
-            bump(&self.stats.busy);
+        if st.nar_waiters >= self.cfg.max_nar_waiters {
+            bump(&self.stats.nar_busy);
             return;
         }
-        st.waiters += 1;
+        bump(&self.stats.nar_waited);
+        st.nar_waiters += 1;
         st.requested.insert(file.to_string());
         // Two paths can share a NAR; the file is there after the first.
         while st.files.contains_key(file) && !path.is_file() {
             st = self.done.wait(st).unwrap();
         }
-        st.waiters -= 1;
+        st.nar_waiters -= 1;
     }
 
     fn work(&self) {
@@ -574,8 +591,8 @@ impl Pull {
             .get((src.url)(&p.info.url))
             .call()
             .with_context(|| format!("GET {}", p.info.url))?;
-        let tmp = TempFile(self.store.nar_temp(&p.file)?);
-        let mut file = File::create(&tmp.0)?;
+        let (tmp, mut file) = self.store.nar_temp(&p.file)?;
+        let tmp = TempFile(tmp);
         let meta = verify(
             resp.into_body().into_reader(),
             Some(&mut file),
@@ -927,7 +944,8 @@ Deriver: {hash}-pkg-{c}.drv\n",
             negative_ttl: Duration::from_secs(60),
             workers: 2,
             max_pending: 16,
-            max_waiters: 16,
+            max_lookups: 16,
+            max_nar_waiters: 16,
             lookup_timeout: Duration::from_secs(5),
             stall_timeout: Duration::from_secs(5),
         }
@@ -1435,7 +1453,7 @@ Deriver: {hash}-pkg-{c}.drv\n",
         up.add(&o);
         up.hold("nar/");
         let cfg = Config {
-            max_waiters: 1,
+            max_nar_waiters: 1,
             ..config()
         };
         let k = Kasha::pulling(&[&base], cfg);
@@ -1448,9 +1466,23 @@ Deriver: {hash}-pkg-{c}.drv\n",
         });
         let pull = k.app.pull.as_ref().unwrap();
         eventually("the first request to wait", || {
-            pull.state.lock().unwrap().waiters == 1
+            pull.state.lock().unwrap().nar_waiters == 1
         });
         assert_eq!(k.get(&format!("nar/{}", o.box_file)).0, 404);
+
+        // Waiting NAR requests have a cap of their own: lookups still run.
+        let other = object(&key(), 'b', "xz");
+        up.add(&other);
+        assert_eq!(k.narinfo(&other).0, 200);
+        let (_, metrics) = k.get("metrics");
+        let metrics = String::from_utf8(metrics).unwrap();
+        for line in [
+            "kasha_pull_through_nar_waits_total{result=\"waited\"} 1",
+            "kasha_pull_through_nar_waits_total{result=\"busy\"} 1",
+            "kasha_pull_through_lookups_total{result=\"busy\"} 0",
+        ] {
+            assert!(metrics.lines().any(|l| l == line), "missing {line:?}");
+        }
         up.release();
         assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 200);
     }
@@ -1484,7 +1516,7 @@ Deriver: {hash}-pkg-{c}.drv\n",
         });
         let pull = k.app.pull.as_ref().unwrap();
         eventually("the request for c to wait", || {
-            pull.state.lock().unwrap().waiters == 1
+            pull.state.lock().unwrap().nar_waiters == 1
         });
         up.release();
         assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 200);
@@ -1682,31 +1714,50 @@ CA: fixed:r:sha256:{nar_hash}\n",
     #[test]
     fn concurrent_requests_for_one_path_share_one_lookup() {
         let (up, base) = Upstream::start();
-        let o = object(&key(), 'a', "xz");
-        up.add(&o);
-        up.hold(&o.hash);
+        let (found, failing) = (object(&key(), 'a', "xz"), object(&key(), 'b', "xz"));
+        up.add(&found);
+        up.add(&failing);
+        let broken = format!("{}.narinfo", failing.hash);
+        up.broken.lock().unwrap().insert(broken.clone(), 500);
         let k = Kasha::pulling(&[&base], config());
-        let (tx, rx) = mpsc::channel();
-        for _ in 0..3 {
-            let (tx, url) = (tx.clone(), format!("{}/{}.narinfo", k.base, o.hash));
-            std::thread::spawn(move || {
-                let mut resp = client().get(url).call().unwrap();
-                let body = resp.body_mut().read_to_string().unwrap();
-                tx.send((resp.status().as_u16(), body)).unwrap();
-            });
-        }
         let pull = k.app.pull.as_ref().unwrap();
-        eventually("all three requests to wait", || {
-            pull.state.lock().unwrap().waiters == 3
-        });
-        up.release();
-        let answers: Vec<_> = (0..3)
-            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
-            .collect();
+
+        // Three requests for `o` while the source holds its answer.
+        let ask_thrice = |o: &Obj| {
+            up.hold(&o.hash);
+            let (tx, rx) = mpsc::channel();
+            for _ in 0..3 {
+                let (tx, url) = (tx.clone(), format!("{}/{}.narinfo", k.base, o.hash));
+                std::thread::spawn(move || {
+                    let mut resp = client().get(url).call().unwrap();
+                    let body = resp.body_mut().read_to_string().unwrap();
+                    tx.send((resp.status().as_u16(), body)).unwrap();
+                });
+            }
+            eventually("all three requests to wait", || {
+                pull.state.lock().unwrap().lookup_waiters == 3
+            });
+            up.release();
+            let answers: Vec<_> = (0..3)
+                .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+                .collect();
+            assert_eq!(pull.state.lock().unwrap().lookup_waiters, 0);
+            answers
+        };
+
+        let answers = ask_thrice(&found);
         assert!(answers.iter().all(|a| a.0 == 200 && a.1 == answers[0].1));
-        assert_eq!(up.asked(&format!("GET {}.narinfo", o.hash)), 1);
+        assert_eq!(up.asked(&format!("GET {}.narinfo", found.hash)), 1);
+
+        // A lookup that fails is shared as well: the two that waited for it
+        // do not ask the source again. Nothing is remembered, so a later
+        // request does.
+        let answers = ask_thrice(&failing);
+        assert!(answers.iter().all(|a| a.0 == 404));
+        assert_eq!(up.asked(&format!("GET {broken}")), 1);
+        assert_eq!(k.narinfo(&failing).0, 404);
+        assert_eq!(up.asked(&format!("GET {broken}")), 2);
         k.settle();
-        assert_eq!(pull.state.lock().unwrap().waiters, 0);
     }
 
     #[test]
@@ -1719,7 +1770,7 @@ CA: fixed:r:sha256:{nar_hash}\n",
         // A source that accepts connections and never answers.
         up.hold("");
         let cfg = Config {
-            max_waiters: 2,
+            max_lookups: 2,
             ..config()
         };
         let k = Kasha::pulling(&[&base], cfg);
@@ -1734,7 +1785,7 @@ CA: fixed:r:sha256:{nar_hash}\n",
         }
         let pull = k.app.pull.as_ref().unwrap();
         eventually("two lookups to be stuck", || {
-            pull.state.lock().unwrap().waiters == 2
+            pull.state.lock().unwrap().lookup_waiters == 2
         });
 
         // A third lookup is turned away at once, and the box keeps answering

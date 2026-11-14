@@ -285,9 +285,11 @@ fn main() -> Result<()> {
                     negative_ttl: Duration::from_secs(pull_through_negative_ttl_secs),
                     workers: pull_through_workers as usize,
                     max_pending: pull_through_max_pending as usize,
-                    // Half the request slots: requests waiting on a source
-                    // must leave room for the ones the store can answer.
-                    max_waiters: (max_inflight as usize / 2).max(1),
+                    // A quarter of the request slots for each kind of
+                    // request that waits on a source, so half stay free for
+                    // the ones the store can answer.
+                    max_lookups: (max_inflight as usize / 4).max(1),
+                    max_nar_waiters: (max_inflight as usize / 4).max(1),
                     lookup_timeout: Duration::from_secs(pull_through_lookup_timeout_secs),
                     stall_timeout: Duration::from_secs(pull_through_stall_timeout_secs),
                 };
@@ -548,6 +550,12 @@ fn sync_loop(
                         .fetch_add(r.deleted.len() as u64, Ordering::Relaxed);
                 }
                 Err(e) => tracing::warn!(error = format!("{e:#}"), "box sweep failed"),
+            }
+            // What a crash shortly before the last start left behind was
+            // too young to remove then.
+            let stale = app.store.clean_temps();
+            if stale > 0 {
+                tracing::info!(stale, "removed abandoned temp files");
             }
         }
         std::thread::sleep(Duration::from_secs(sync_interval));

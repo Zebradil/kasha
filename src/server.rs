@@ -566,7 +566,7 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
             o,
             "kasha_pull_through_lookups_total",
             "counter",
-            "Narinfo misses handled by pull-through, by result (found: a source had it, miss: no source had it, negative: a remembered miss, failed: a source could not answer, capped: over the pending cap, busy: too many requests already wait on a source, NAR requests included).",
+            "Narinfo misses handled by pull-through, by result (found: a source had it, miss: no source had it, negative: a remembered miss, failed: a source could not answer, capped: over the pending cap, busy: too many narinfo requests already wait on a lookup).",
         )?;
         for (result, v) in [
             ("found", &p.found),
@@ -579,6 +579,19 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
             writeln!(
                 o,
                 "kasha_pull_through_lookups_total{{result=\"{result}\"}} {}",
+                n(v)
+            )?;
+        }
+        head(
+            o,
+            "kasha_pull_through_nar_waits_total",
+            "counter",
+            "NAR requests for a download in flight, by result (waited: held until it ended, busy: turned away, too many already wait).",
+        )?;
+        for (result, v) in [("waited", &p.nar_waited), ("busy", &p.nar_busy)] {
+            writeln!(
+                o,
+                "kasha_pull_through_nar_waits_total{{result=\"{result}\"}} {}",
                 n(v)
             )?;
         }

@@ -84,9 +84,10 @@ impl Store {
     }
 
     /// Remove temp files a killed process left behind; returns how many.
-    /// Only old ones go: a young one can belong to a `serve` still writing
-    /// to this volume, such as the one a rolling restart replaces. Nothing
-    /// here is worth failing a start for, so errors are skipped.
+    /// Only old ones go: a young one can belong to a writer that is still
+    /// at it, in this process or in another `serve` on the volume, such as
+    /// the one a rolling restart replaces. Nothing here is worth failing
+    /// for, so errors are skipped.
     pub fn clean_temps(&self) -> usize {
         let mut dirs = vec![self.root.clone(), self.root.join("nar")];
         if let Ok(flakes) = fs::read_dir(self.root.join("roots")) {
@@ -138,10 +139,10 @@ impl Store {
         Ok(())
     }
 
-    /// A temp path beside the NAR `file`, for a download that
+    /// A new temp file beside the NAR `file`, for a download that
     /// `publish_pulled` then moves into place.
-    pub fn nar_temp(&self, file: &str) -> Result<PathBuf> {
-        temp_beside(&self.nar_path(file)?)
+    pub fn nar_temp(&self, file: &str) -> Result<(PathBuf, fs::File)> {
+        create_temp(&self.nar_path(file)?)
     }
 
     /// Store a pulled-through path without replacing anything: the NAR
@@ -475,18 +476,16 @@ impl Store {
 
 const TEMP_PREFIX: &str = ".tmp-";
 
-/// No write takes this long; an older temp file has no writer.
+/// A temp file untouched for this long has no writer: one that is still
+/// being written keeps a fresh mtime.
 const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// Read-only: the owner may set times on a file it cannot open for writing.
 fn touch(path: &Path) -> std::io::Result<()> {
-    fs::File::options()
-        .write(true)
-        .open(path)?
-        .set_modified(SystemTime::now())
+    fs::File::open(path)?.set_modified(SystemTime::now())
 }
 
-/// A temp path beside `path`. The counter keeps concurrent writers of one
-/// object in one process apart; the pid, writers in different processes.
+/// A temp path beside `path`, different on every call within one process.
 fn temp_beside(path: &Path) -> Result<PathBuf> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().context("no parent dir")?;
@@ -498,13 +497,28 @@ fn temp_beside(path: &Path) -> Result<PathBuf> {
     )))
 }
 
+/// Create a temp file beside `path` that no other writer has. Pid and
+/// counter do not make the name unique across processes: in containers
+/// every `serve` is pid 1 and counts from zero, and two can share a volume.
+/// So the file is created exclusively, moving on to the next name when one
+/// is taken.
+fn create_temp(path: &Path) -> Result<(PathBuf, fs::File)> {
+    loop {
+        let tmp = temp_beside(path)?;
+        match fs::File::options().write(true).create_new(true).open(&tmp) {
+            Ok(f) => return Ok((tmp, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).with_context(|| format!("creating {}", tmp.display())),
+        }
+    }
+}
+
 /// Write and sync a temp file beside `path`, for `move_into_place`.
 fn write_temp(
     path: &Path,
     fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
 ) -> Result<PathBuf> {
-    let tmp = temp_beside(path)?;
-    let mut f = fs::File::create(&tmp)?;
+    let (tmp, mut f) = create_temp(path)?;
     let res = fill(&mut f).and_then(|()| f.sync_all());
     drop(f);
     match res {
@@ -594,8 +608,8 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         let n = NarInfo::parse(REAL).unwrap();
         let file = n.url.strip_prefix("nar/").unwrap();
         let download = |body: &[u8]| {
-            let tmp = s.nar_temp(file).unwrap();
-            fs::write(&tmp, body).unwrap();
+            let (tmp, mut f) = s.nar_temp(file).unwrap();
+            f.write_all(body).unwrap();
             tmp
         };
 
@@ -667,8 +681,29 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
     fn temp_files_are_unique_ignored_and_cleaned() {
         let root = tmp();
         let s = Store::open(&root).unwrap();
-        let (a, b) = (s.nar_temp("f.nar").unwrap(), s.nar_temp("f.nar").unwrap());
+        let ((a, _), (b, _)) = (s.nar_temp("f.nar").unwrap(), s.nar_temp("f.nar").unwrap());
         assert_ne!(a, b, "two writers of one object share a temp file");
+
+        // Names another process on the volume already took, as a second
+        // pid-1 `serve` counting from zero would: they are skipped, never
+        // opened.
+        let object = s.nar_path("g.nar").unwrap();
+        let next = temp_beside(&object).unwrap();
+        let name = next.file_name().unwrap().to_string_lossy().into_owned();
+        let seq: u64 = name.split('-').nth(2).unwrap().parse().unwrap();
+        let taken: Vec<PathBuf> = (seq + 1..seq + 200)
+            .map(|n| next.with_file_name(name.replacen(&format!("-{seq}-"), &format!("-{n}-"), 1)))
+            .collect();
+        for t in &taken {
+            fs::write(t, "taken").unwrap();
+        }
+        let (mine, _) = create_temp(&object).unwrap();
+        assert!(!taken.contains(&mine));
+        for t in &taken {
+            assert_eq!(fs::read(t).unwrap(), b"taken");
+            fs::remove_file(t).unwrap();
+        }
+        fs::remove_file(mine).unwrap();
 
         // What a killed process leaves behind.
         let n = NarInfo::parse(REAL).unwrap();

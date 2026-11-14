@@ -64,11 +64,13 @@ pkgs.testers.runNixOSTest {
       };
     };
 
-    # Stands in for a short-lived consumer that only knows the edge box.
+    # Stands in for a short-lived consumer whose only substituter is the edge
+    # box.
     job = _: {
       nix.settings = {
         experimental-features = [ "nix-command" ];
-        substituters = pkgs.lib.mkForce [ ];
+        substituters = pkgs.lib.mkForce [ "http://edge:${toString port}" ];
+        trusted-public-keys = pkgs.lib.mkForce [ pk ];
       };
       environment.systemPackages = [ pkgs.curl ];
     };
@@ -129,11 +131,10 @@ pkgs.testers.runNixOSTest {
     edge_base = "http://edge:${toString port}"
     store_hash = path.split("/")[-1][:32]
     narinfo = f"/var/lib/kasha/{store_hash}.narinfo"
-    copy_from_edge = (
-        f"nix copy --from {edge_base} "
-        "--option trusted-public-keys '${pk}' "
-        f"--option require-sigs true {path}"
-    )
+    # Substitution, as a build does it: a GET for the narinfo. `nix copy
+    # --from` would not do: it first asks the source whether the path is
+    # valid with a HEAD, which only reports what the edge box already stores.
+    substitute = f"nix-store --realise {path}"
 
     # HEAD reports the store and never starts a fetch.
     code = job.succeed(
@@ -142,7 +143,7 @@ pkgs.testers.runNixOSTest {
     assert code == "404", f"expected 404, got {code}"
     edge.fail(f"test -e {narinfo}")
 
-    job.succeed(copy_from_edge)
+    job.succeed(substitute)
     job.succeed(f"nix-store --check-validity {path}")
     job.succeed(f"grep -q hello-kasha-v2 {path}")
 
@@ -154,7 +155,7 @@ pkgs.testers.runNixOSTest {
     # With the upstream gone the edge box still serves it.
     box.succeed("systemctl stop kasha.service")
     job.succeed(f"nix-store --delete {path}")
-    job.succeed(copy_from_edge)
+    job.succeed(substitute)
     job.succeed(f"grep -q hello-kasha-v2 {path}")
   '';
 }

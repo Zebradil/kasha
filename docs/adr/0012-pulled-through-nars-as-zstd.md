@@ -16,8 +16,10 @@ zstd -dq py.nar.zst -o py.nar && xz -6 -T1 -k py.nar && zstd -q -3 -T1 py.nar -o
 time xz -dc -T1 py.nar.xz >/dev/null; time zstd -dqc py.3.zst >/dev/null
 ```
 
-On a 1 Gb/s LAN the 9.7 MB more take 0.08 s to send, a tenth of the 0.74 s of decoding
-they save.
+On a 1 Gb/s LAN the 9.7 MB more take 0.08 s, a tenth of the decoding they save. The gain is
+for xz sources: `cache.nixos.org` serves current paths as zstd named by `NarHash` (the NAR
+above) but older ones as xz (`w9yy7v61ipb5rx6i35zq1mvc2iqfmps1-hello-2.10`, nixpkgs 20.09),
+and so is every cache that `nix copy` filled with its default.
 
 **Decision.** A NAR the box pulls through (ADR-0011), from the remote cache or an upstream
 cache, is stored as zstd at level 3, under `nar/<nix32 NarHash>.nar.zst`, whatever the source's
@@ -27,9 +29,8 @@ and `FileSize`, once stored, are those of the zstd file. Pushed objects, objects
 and objects already on disk stay as they arrived and are served as they are.
 
 Signatures stay valid: they cover the store path, `NarHash`, `NarSize` and references
-(`src/libstore/path-info.cc:43-50`), not the file. Level 3 because a client may be waiting
-on the download: a higher level costs the box more time than its smaller file saves the
-client.
+(`src/libstore/path-info.cc:43-50`), not the file. Level 3 because a client may be waiting:
+a higher level costs the box more time than its smaller file saves the client.
 
 Consequences:
 
@@ -38,5 +39,5 @@ Consequences:
 - The stored name no longer depends on the source's encoding. A `.nar.zst` of the same NAR
   already in the store is checked by decoding it and reused; zstd output need not be
   deterministic. A `.nar.xz` of it stored before this change coexists until the sweep removes
-  it, and a client holding the old narinfo still gets that file.
-- The box stores and serves more bytes than an xz source held.
+  it, and a client holding the old narinfo still gets that file. The box stores and serves
+  more bytes than an xz source held.

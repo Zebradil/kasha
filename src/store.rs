@@ -398,17 +398,36 @@ impl Store {
 
     /// Remove a narinfo (file + index entry). Sweep helper.
     pub fn remove_narinfo(&self, store_hash: &str) -> Result<()> {
+        self.remove_narinfo_unless(store_hash, |_| false).map(drop)
+    }
+
+    /// Remove a narinfo unless `keep`, given its mtime as it is now, says
+    /// otherwise; returns whether it was removed. Decided under the index
+    /// lock, and file and entry go together, so no reader of the index sees
+    /// a narinfo that is gone from disk.
+    pub fn remove_narinfo_unless(
+        &self,
+        store_hash: &str,
+        keep: impl FnOnce(SystemTime) -> bool,
+    ) -> Result<bool> {
         let p = self.narinfo_path(store_hash)?;
-        // File and entry go under one lock, so no reader of the index sees
-        // a narinfo that is gone from disk.
         let mut idx = self.index.write().unwrap();
-        match fs::remove_file(p) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        let removed = match fs::metadata(&p).and_then(|m| m.modified()) {
+            Ok(t) if keep(t) => return Ok(false),
+            Ok(_) => fs::remove_file(&p).map(|()| true),
+            Err(e) => Err(e),
+        };
+        match removed {
+            Ok(removed) => {
+                idx.remove(store_hash);
+                Ok(removed)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                idx.remove(store_hash);
+                Ok(false)
+            }
+            Err(e) => Err(e).with_context(|| format!("removing {}", p.display())),
         }
-        idx.remove(store_hash);
-        Ok(())
     }
 
     /// Drop index entries whose narinfo is gone from disk: deleted by a sweep
@@ -428,8 +447,8 @@ impl Store {
         self.index.read().unwrap().get(store_hash).cloned()
     }
 
-    /// All narinfo hashes on disk with mtimes (sweep input).
-    pub fn narinfo_files(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+    /// All narinfo hashes on disk with mtimes and sizes (sweep input).
+    pub fn narinfo_files(&self) -> Result<Vec<(String, SystemTime, u64)>> {
         let mut out = Vec::new();
         for e in fs::read_dir(&self.root)? {
             let e = e?;
@@ -439,34 +458,24 @@ impl Store {
                 .filter(|n| !n.starts_with('.'))
                 .and_then(|n| n.strip_suffix(".narinfo"))
             {
-                out.push((hash.to_string(), e.metadata()?.modified()?));
+                let m = e.metadata()?;
+                out.push((hash.to_string(), m.modified()?, m.len()));
             }
         }
         Ok(out)
     }
 
-    /// All nar object file names with mtimes (sweep input).
-    pub fn nar_files(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+    /// All nar object file names with mtimes and sizes (sweep and age
+    /// metrics input).
+    pub fn nar_files(&self) -> Result<Vec<(String, SystemTime, u64)>> {
         let mut out = Vec::new();
         for e in fs::read_dir(self.root.join("nar"))? {
             let e = e?;
             if let Some(name) = e.file_name().to_str()
                 && !name.starts_with('.')
             {
-                out.push((name.to_string(), e.metadata()?.modified()?));
-            }
-        }
-        Ok(out)
-    }
-
-    /// mtime and size of every nar object (age metrics input).
-    pub fn nar_stats(&self) -> Result<Vec<(SystemTime, u64)>> {
-        let mut out = Vec::new();
-        for e in fs::read_dir(self.root.join("nar"))? {
-            let e = e?;
-            if e.file_name().to_str().is_some_and(|n| !n.starts_with('.')) {
                 let m = e.metadata()?;
-                out.push((m.modified()?, m.len()));
+                out.push((name.to_string(), m.modified()?, m.len()));
             }
         }
         Ok(out)
@@ -479,12 +488,32 @@ impl Store {
             .ok()
     }
 
-    pub fn remove_nar(&self, file: &str) -> Result<()> {
+    /// Remove a nar object unless `keep`, given its mtime as it is now, says
+    /// otherwise; returns whether it was removed. Decided under the index
+    /// lock, so a narinfo writer, which touches the NAR it names under that
+    /// lock, either comes first and keeps it young or finds it gone.
+    /// Unlinking a large file can take long, so under the lock it is only
+    /// renamed away.
+    pub fn remove_nar_unless(
+        &self,
+        file: &str,
+        keep: impl FnOnce(SystemTime) -> bool,
+    ) -> Result<bool> {
         let p = self.nar_path(file)?;
-        if p.exists() {
-            fs::remove_file(p)?;
-        }
-        Ok(())
+        // Made before the lock, and replaced by the rename: a name no other
+        // writer uses.
+        let (dead, _) = create_temp(&p)?;
+        let removed = {
+            let _idx = self.index.write().unwrap();
+            match fs::metadata(&p).and_then(|m| m.modified()) {
+                Ok(t) if keep(t) => Ok(false),
+                Ok(_) => fs::rename(&p, &dead).map(|()| true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(e),
+            }
+        };
+        let _ = fs::remove_file(&dead);
+        removed.with_context(|| format!("removing {}", p.display()))
     }
 
     /// Read a narinfo's raw text by store hash, if present.
@@ -523,6 +552,22 @@ pub const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(360
 /// Read-only: the owner may set times on a file it cannot open for writing.
 fn touch(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.set_modified(SystemTime::now())
+}
+
+/// The resolution of recorded use: a read rewrites an mtime only when it is
+/// older than this, so a hot file is not a metadata write per request.
+pub const USE_RESOLUTION: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Record a read of an open narinfo or NAR file as its use (ADR-0013). A
+/// failure only makes the path look older than it is, so it is not one.
+pub fn mark_used(f: &fs::File) {
+    let stale = f
+        .metadata()
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age >= USE_RESOLUTION));
+    if stale && let Err(e) = f.set_modified(SystemTime::now()) {
+        tracing::debug!(error = %e, "recording use failed");
+    }
 }
 
 /// A temp path beside `path`, different on every call within one process.

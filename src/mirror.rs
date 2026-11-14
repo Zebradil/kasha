@@ -623,6 +623,7 @@ References: \n"
             ages: Default::default(),
             priority: 10,
             pull: None,
+            lru: None,
         });
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());

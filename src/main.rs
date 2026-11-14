@@ -265,7 +265,7 @@ fn main() -> Result<()> {
             pull_through_stall_timeout_secs,
         } => {
             let store = Arc::new(store::Store::open(&data)?);
-            let stale = store.clean_temps()?;
+            let stale = store.clean_temps();
             if stale > 0 {
                 tracing::info!(stale, "removed temp files of an interrupted run");
             }

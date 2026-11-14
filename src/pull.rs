@@ -1513,19 +1513,19 @@ Deriver: {hash}-pkg-{c}.drv\n",
         let good = object(&key(), 'a', "none");
         up.add(&good);
         k.app.store.put_nar(&good.box_file, &good.file[..]).unwrap();
-        let written = std::fs::metadata(k.app.store.nar_path(&good.box_file).unwrap())
-            .unwrap()
-            .modified()
-            .unwrap();
+        // The same file before and after, not a copy moved over it.
+        let inode = || {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(k.app.store.nar_path(&good.box_file).unwrap())
+                .unwrap()
+                .ino()
+        };
+        let pushed = inode();
         assert_eq!(k.narinfo(&good).0, 200);
         k.settle();
         assert!(k.app.store.has(&good.hash));
         assert_eq!(up.asked(&format!("GET {}", good.key)), 0);
-        let now = std::fs::metadata(k.app.store.nar_path(&good.box_file).unwrap())
-            .unwrap()
-            .modified()
-            .unwrap();
-        assert_eq!(written, now);
+        assert_eq!(pushed, inode());
 
         // A file of that name with other contents is not this NAR: it stays,
         // and the path is not stored.

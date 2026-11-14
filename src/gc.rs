@@ -50,6 +50,17 @@ fn to_gen(id: String, m: &Manifest) -> Gen {
 /// marks from the newest-N manifests per group plus every unmirrored
 /// local-origin gen (box may hold the only copy), then sweeps objects.
 pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<SweepReport> {
+    sweep(store, now, grace, || ())
+}
+
+/// `box_sweep`, with `nars_listed` called once the NARs are listed and
+/// before any is removed: the point where a test lets a writer in.
+fn sweep(
+    store: &Store,
+    now: SystemTime,
+    grace: Duration,
+    nars_listed: impl FnOnce(),
+) -> Result<SweepReport> {
     // Two passes so only one closure is in memory at a time: retention needs
     // every manifest's header, marking only the retained closures.
     let files = store.manifest_files()?;
@@ -108,11 +119,17 @@ pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<Swee
         store.remove_narinfo(&hash)?;
         report.deleted.push(format!("{hash}.narinfo"));
     }
-    for (file, mtime) in store.nar_files()? {
+    let nars = store.nar_files()?;
+    nars_listed();
+    let young = |mtime: SystemTime| now.duration_since(mtime).unwrap_or(Duration::ZERO) < grace;
+    for (file, mtime) in nars {
         if live_nars.contains(&file) {
             continue;
         }
-        if now.duration_since(mtime).unwrap_or(Duration::ZERO) < grace {
+        // Read again right before removing: a pulled-through path that
+        // reuses this NAR resets its age, and may have done so since the
+        // listing, from this process or from `serve` beside `kasha sweep`.
+        if young(mtime) || store.nar_modified(&file).is_some_and(young) {
             report.skipped_young += 1;
             continue;
         }
@@ -641,6 +658,58 @@ References: \n"
         let r = box_sweep(&store, now, GRACE).unwrap();
         assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
         assert!(store.nar_path(&nar).unwrap().exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn box_sweep_spares_a_nar_reused_while_it_runs() {
+        let now = SystemTime::now();
+        let dir = std::env::temp_dir().join(format!(
+            "kasha-gc-reuse-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir).unwrap();
+        // A retained generation, so the sweep has a mark set.
+        let (ha, ia, na) = object('a', "pkg-a");
+        store.put_nar(&format!("{ha}.nar.xz"), &na[..]).unwrap();
+        store
+            .put_narinfo(&NarInfo::parse(&ia).unwrap(), ia.as_bytes())
+            .unwrap();
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{ha}-pkg-a")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+
+        // A NAR no narinfo names, past grace: the sweep is about to take it.
+        let (_, ib, nb) = object('b', "pkg-b");
+        let info = NarInfo::parse(&ib).unwrap();
+        let nar = info.url.strip_prefix("nar/").unwrap();
+        store.put_nar(nar, &nb[..]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(store.nar_path(nar).unwrap())
+            .unwrap()
+            .set_modified(now - 2 * GRACE)
+            .unwrap();
+
+        // Pull-through publishes a path that reuses it after the sweep has
+        // listed narinfos and NARs.
+        let r = sweep(&store, now, GRACE, || {
+            let published = store.publish_pulled(&info, ib.as_bytes(), None).unwrap();
+            assert_eq!(published, crate::store::Published::Stored);
+        })
+        .unwrap();
+        assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
+        assert!(store.nar_path(nar).unwrap().exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

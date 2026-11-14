@@ -83,25 +83,26 @@ impl Store {
         Ok(())
     }
 
-    /// Remove temp files a killed process left behind. Only `serve` calls
-    /// this: it is the store's one writer, and `kasha sweep` beside it must
-    /// not take its in-progress temps.
-    pub fn clean_temps(&self) -> Result<usize> {
+    /// Remove temp files a killed process left behind; returns how many.
+    /// Only old ones go: a young one can belong to a `serve` still writing
+    /// to this volume, such as the one a rolling restart replaces. Nothing
+    /// here is worth failing a start for, so errors are skipped.
+    pub fn clean_temps(&self) -> usize {
         let mut dirs = vec![self.root.clone(), self.root.join("nar")];
-        for flake in fs::read_dir(self.root.join("roots"))? {
-            dirs.push(flake?.path());
+        if let Ok(flakes) = fs::read_dir(self.root.join("roots")) {
+            dirs.extend(flakes.flatten().map(|f| f.path()));
         }
-        let mut removed = 0;
-        for dir in dirs.iter().filter(|d| d.is_dir()) {
-            for e in fs::read_dir(dir)? {
-                let e = e?;
-                if e.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
-                    fs::remove_file(e.path())?;
-                    removed += 1;
-                }
-            }
-        }
-        Ok(removed)
+        let stale = |e: &fs::DirEntry| {
+            e.file_name().to_string_lossy().starts_with(TEMP_PREFIX)
+                && e.metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().is_ok_and(|age| age >= TEMP_MAX_AGE))
+        };
+        dirs.iter()
+            .filter_map(|dir| fs::read_dir(dir).ok())
+            .flat_map(|entries| entries.flatten())
+            .filter(|e| stale(e) && fs::remove_file(e.path()).is_ok())
+            .count()
     }
 
     pub fn len(&self) -> usize {
@@ -127,10 +128,12 @@ impl Store {
     /// `NarInfo::verify` first.
     pub fn put_narinfo(&self, info: &NarInfo, raw: &[u8]) -> Result<()> {
         let path = self.narinfo_path(info.store_hash())?;
-        // Held across the write: index and disk must agree when this races
-        // `publish_pulled` for the same path.
+        let tmp = write_temp(&path, |f| f.write_all(raw))?;
+        // Rename and index update under one lock, so index and disk agree
+        // when this races `publish_pulled` for the same path. The write and
+        // its fsync stay outside: the lock also serves every index reader.
         let mut idx = self.index.write().unwrap();
-        write_atomic(&path, |f| f.write_all(raw))?;
+        move_into_place(&tmp, &path)?;
         idx.insert(info.store_hash().to_string(), info.url.clone());
         Ok(())
     }
@@ -155,6 +158,24 @@ impl Store {
         let narinfo = self.narinfo_path(info.store_hash())?;
         let file = info.url.strip_prefix("nar/").context("nar URL")?;
         let nar = self.nar_path(file)?;
+        let narinfo_tmp = write_temp(&narinfo, |f| f.write_all(raw))?;
+        let published = self.publish_locked(info, &narinfo, &narinfo_tmp, &nar, nar_tmp);
+        if !matches!(published, Ok(Published::Stored)) {
+            let _ = fs::remove_file(&narinfo_tmp);
+        }
+        published
+    }
+
+    /// The part of `publish_pulled` that needs the index lock: checks,
+    /// renames and the index update, no file contents.
+    fn publish_locked(
+        &self,
+        info: &NarInfo,
+        narinfo: &Path,
+        narinfo_tmp: &Path,
+        nar: &Path,
+        nar_tmp: Option<&Path>,
+    ) -> Result<Published> {
         // Every narinfo writer takes this lock, so the check below holds
         // until this narinfo is in place.
         let mut idx = self.index.write().unwrap();
@@ -163,7 +184,7 @@ impl Store {
         }
         match nar_tmp {
             // A hard link is the portable way to create without replacing.
-            Some(tmp) => match fs::hard_link(tmp, &nar) {
+            Some(tmp) => match fs::hard_link(tmp, nar) {
                 Ok(()) => {
                     let _ = fs::remove_file(tmp);
                 }
@@ -172,16 +193,24 @@ impl Store {
                 }
                 Err(e) => return Err(e).with_context(|| format!("storing {}", nar.display())),
             },
-            None if !nar.is_file() => return Ok(Published::NarMissing),
-            None => {}
+            // The sweep judges a NAR by its age. A reused one may be past
+            // grace already, so it is made as young as the narinfo that
+            // names it from now on.
+            None => match touch(nar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Published::NarMissing);
+                }
+                Err(e) => return Err(e).with_context(|| format!("touching {}", nar.display())),
+            },
         }
-        if let Err(e) = write_atomic(&narinfo, |f| f.write_all(raw)) {
+        if let Err(e) = fs::rename(narinfo_tmp, narinfo) {
             // No narinfo names the NAR this call just created, and none can
             // appear while the lock is held.
             if nar_tmp.is_some() {
-                let _ = fs::remove_file(&nar);
+                let _ = fs::remove_file(nar);
             }
-            return Err(e);
+            return Err(e).with_context(|| format!("writing {}", narinfo.display()));
         }
         idx.insert(info.store_hash().to_string(), info.url.clone());
         Ok(Published::Stored)
@@ -403,6 +432,13 @@ impl Store {
         Ok(out)
     }
 
+    /// mtime of one nar object as it is now; None when it is gone.
+    pub fn nar_modified(&self, file: &str) -> Option<SystemTime> {
+        fs::metadata(self.nar_path(file).ok()?)
+            .and_then(|m| m.modified())
+            .ok()
+    }
+
     pub fn remove_nar(&self, file: &str) -> Result<()> {
         let p = self.nar_path(file)?;
         if p.exists() {
@@ -439,6 +475,16 @@ impl Store {
 
 const TEMP_PREFIX: &str = ".tmp-";
 
+/// No write takes this long; an older temp file has no writer.
+const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+fn touch(path: &Path) -> std::io::Result<()> {
+    fs::File::options()
+        .write(true)
+        .open(path)?
+        .set_modified(SystemTime::now())
+}
+
 /// A temp path beside `path`. The counter keeps concurrent writers of one
 /// object in one process apart; the pid, writers in different processes.
 fn temp_beside(path: &Path) -> Result<PathBuf> {
@@ -452,25 +498,37 @@ fn temp_beside(path: &Path) -> Result<PathBuf> {
     )))
 }
 
-/// Write via temp file + rename so readers never see partial objects.
-fn write_atomic(
+/// Write and sync a temp file beside `path`, for `move_into_place`.
+fn write_temp(
     path: &Path,
     fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let tmp = temp_beside(path)?;
     let mut f = fs::File::create(&tmp)?;
     let res = fill(&mut f).and_then(|()| f.sync_all());
     drop(f);
     match res {
-        Ok(()) => {
-            fs::rename(&tmp, path)?;
-            Ok(())
-        }
+        Ok(()) => Ok(tmp),
         Err(e) => {
             let _ = fs::remove_file(&tmp);
             Err(e).with_context(|| format!("writing {}", path.display()))
         }
     }
+}
+
+fn move_into_place(tmp: &Path, path: &Path) -> Result<()> {
+    fs::rename(tmp, path).map_err(|e| {
+        let _ = fs::remove_file(tmp);
+        anyhow::Error::new(e).context(format!("writing {}", path.display()))
+    })
+}
+
+/// Write via temp file + rename so readers never see partial objects.
+fn write_atomic(
+    path: &Path,
+    fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<()> {
+    move_into_place(&write_temp(path, fill)?, path)
 }
 
 #[cfg(test)]
@@ -574,10 +632,34 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         );
         assert!(tmp.exists() && !s.has(n.store_hash()));
         assert_eq!(fs::read(s.nar_path(file).unwrap()).unwrap(), b"first");
+
+        // Reusing it makes it young again, so no sweep takes it from under
+        // the new narinfo.
+        let long_ago = SystemTime::now() - Duration::from_secs(7 * 86400);
+        fs::File::options()
+            .write(true)
+            .open(s.nar_path(file).unwrap())
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
         assert_eq!(
             s.publish_pulled(&n, REAL.as_bytes(), None).unwrap(),
             Published::Stored
         );
+        assert!(s.nar_modified(file).unwrap() > long_ago + Duration::from_secs(86400));
+
+        // Only the download the caller still owns is left in a temp file.
+        fs::remove_file(tmp).unwrap();
+        let temps = |dir: &Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .filter(|e| {
+                    let name = e.as_ref().unwrap().file_name();
+                    name.to_string_lossy().starts_with(TEMP_PREFIX)
+                })
+                .count()
+        };
+        assert_eq!(temps(&root) + temps(&root.join("nar")), 0);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -593,9 +675,14 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         let narinfo = temp_beside(&s.narinfo_path(n.store_hash()).unwrap()).unwrap();
         fs::create_dir_all(root.join("roots/znix")).unwrap();
         let manifest = temp_beside(&s.manifest_path("znix", "main-1-x").unwrap()).unwrap();
+        let long_ago = SystemTime::now() - 2 * TEMP_MAX_AGE;
         for tmp in [&a, &narinfo, &manifest] {
             fs::write(tmp, REAL).unwrap();
+            let f = fs::File::options().write(true).open(tmp).unwrap();
+            f.set_modified(long_ago).unwrap();
         }
+        // A young temp file may have a live writer.
+        fs::write(&b, REAL).unwrap();
         s.put_nar("kept.nar", &b"x"[..]).unwrap();
 
         // A temp narinfo is neither indexed nor offered to the sweep.
@@ -603,9 +690,9 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         assert_eq!(s.len(), 0);
         assert!(s.narinfo_files().unwrap().is_empty());
 
-        assert_eq!(s.clean_temps().unwrap(), 3);
+        assert_eq!(s.clean_temps(), 3);
         assert!(!a.exists() && !narinfo.exists() && !manifest.exists());
-        assert!(s.nar_path("kept.nar").unwrap().exists());
+        assert!(b.exists() && s.nar_path("kept.nar").unwrap().exists());
         fs::remove_dir_all(root).unwrap();
     }
 

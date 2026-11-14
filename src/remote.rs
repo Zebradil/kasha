@@ -212,8 +212,12 @@ impl Remote for S3Remote {
             let parsed =
                 rusty_s3::actions::ListObjectsV2::parse_response(&text).context("list XML")?;
             for c in parsed.contents {
-                let t =
-                    humantime::parse_rfc3339(&c.last_modified).unwrap_or(SystemTime::UNIX_EPOCH);
+                // Unknown age counts as fresh: GC only deletes objects past grace.
+                let t = c
+                    .last_modified
+                    .as_deref()
+                    .and_then(|s| humantime::parse_rfc3339(s).ok())
+                    .unwrap_or_else(SystemTime::now);
                 out.push((c.key, t));
             }
             token = parsed.next_continuation_token;

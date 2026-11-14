@@ -48,7 +48,7 @@ needs no authentication.
 | `kasha_generation_published_timestamp_seconds{flake,branch}` | gauge | `timestamp` of the newest manifest on the box for the branch: when its producer last published |
 | `kasha_generation_arrived_timestamp_seconds{flake,branch}` | gauge | when the box last stored a new manifest for the branch (the manifest file's mtime, so it survives restarts) |
 | `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients), `ingest` (pushes) or `pull` (pull-through, `source` as for `down`; bytes as the source sent them, before re-encoding) |
-| `kasha_nar_age_objects{le}` | gauge | NARs on disk stored (with `KASHA_UNLISTED_MAX_BYTES` set: last used) at most `le` seconds ago, cumulative like a histogram |
+| `kasha_nar_age_objects{le}` | gauge | NARs on disk whose mtime is at most `le` seconds old, cumulative like a histogram. The mtime is when the box stored the NAR or last wrote a narinfo naming it; with `KASHA_UNLISTED_MAX_BYTES` set, also when a client last read it |
 | `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
 | `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |
 | `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer), `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) or `busy` (a quarter of `KASHA_MAX_INFLIGHT` narinfo requests already wait on a lookup) |
@@ -129,7 +129,8 @@ Lines worth alerting on:
 | `mirror-down failed` | warn | the remote cache could not be listed or read this cycle |
 | `mirror-up deferred` | warn | a local-origin generation could not be pushed up yet |
 | `box sweep failed` | warn | the in-process GC sweep hit an error |
-| `eviction pass failed`, `eviction failed` | warn | an eviction pass, or the removal of one file in it, hit an error; the next pass retries |
+| `eviction pass failed` | warn | an eviction pass could not remove a file or read a manifest and stopped; the next pass retries |
+| `recording use failed` | warn | the box could not set a file's time on a read (it does not own its files); logged once, eviction then goes by store time |
 | `rejected ingest` | warn | a push was refused, e.g. an untrusted signature |
 | `unauthorized write` | warn | a write arrived without a valid token |
 

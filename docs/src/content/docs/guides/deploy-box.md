@@ -11,6 +11,8 @@ and, once it has a remote cache, mirrors generations both ways and garbage-colle
 - A container runtime (Docker, k3s, …) on a machine with a stable LAN address.
 - The public key(s) your producers sign with, in `name:base64` form.
 - Optional, for mirroring: an S3-compatible bucket that holds your remote cache, and read/write credentials for it.
+- A store volume whose filesystem supports hard links: mirror-down and pull-through create NAR files by hard link, so
+  that an existing file is never replaced.
 
 ## 1. Pick an image tag
 
@@ -123,7 +125,7 @@ that is what you want.
 | `KASHA_PULL_THROUGH_WORKERS` | `8` | concurrent NAR downloads |
 | `KASHA_PULL_THROUGH_MAX_PENDING` | `4096` | cap on paths answered but not stored yet, queued downloads included; past it a narinfo miss is `404` |
 | `KASHA_PULL_THROUGH_LOOKUP_TIMEOUT` | `10` | seconds a source gets to accept a connection and to answer a narinfo lookup |
-| `KASHA_PULL_THROUGH_STALL_TIMEOUT` | `60` | seconds a NAR download may receive nothing before it is dropped; below `3600` |
+| `KASHA_PULL_THROUGH_STALL_TIMEOUT` | `60` | seconds a NAR download may receive nothing before it is dropped; below `3600`, or the box refuses to start |
 | `KASHA_UNLISTED_MAX_BYTES` | unset | bytes kept of paths no retained manifest lists, pulled-through ones included; the least recently used go first. Unset, nothing evicts them |
 
 Before you enable it:
@@ -132,9 +134,16 @@ Before you enable it:
   upstream and answers `404` for the rest.
 - **Set a size cap.** Anyone who can reach the box can make it download what its sources serve. Without
   `KASHA_UNLISTED_MAX_BYTES`, a box without manifests never deletes a pulled-through path and grows until the volume is
-  full; with manifests, the sweep deletes each a day after it arrived, however often it is read. Leave room on the
-  volume above the cap: for generations manifests retain, for paths used in the last 10 minutes, which are never
-  evicted, and for what arrives in the seconds before a pass. See
+  full; with manifests, the sweep deletes each a day after it arrived, however often it is read. Eviction does not
+  look at free disk space, and it never evicts a path used in the last 10 minutes, so size the volume as at least:
+
+  ```text
+  volume ≥ retained generations
+         + max(cap, bytes stored in 10 minutes + bytes of older paths read in 10 minutes)
+         + NARs orphaned in the last 24 hours + downloads in flight
+  ```
+
+  For example, a box that can receive 1 Gb/s stores up to 75 GB in 10 minutes. See
   [Retention and GC](../../concepts/retention/#unlisted-paths-and-the-size-cap).
 - **Budget CPU for the workers.** Each download is decoded to be checked and, unless the source serves zstd, encoded
   again as zstd, on one core per busy worker.

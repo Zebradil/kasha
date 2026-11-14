@@ -85,21 +85,30 @@ a remote cache or manifests:
   it. A NAR that a listed path names counts toward nothing and is never evicted. An old `.nar.xz` and a `.nar.zst` of
   the same NAR are two files.
 - **What use is.** A `GET` or `HEAD` of a narinfo or NAR, or storing it. The box records it as the file's modification
-  time, rewritten at most once a minute per file; a path was last used when its narinfo or its NAR was. The record is
-  on disk, so a restart loses nothing. One consequence: on such a box the NAR age metrics measure time since last use,
-  not since the box stored the file.
-- **When it runs.** Inside `kasha serve`, every 5 minutes, and within 5 seconds once the NAR bytes pulled through or
-  pushed since the last pass could take the unlisted paths over the cap. `kasha sweep` runs a pass too.
+  time, rewritten at most once a minute per file (and at once if it lies in the future); a path was last used when its
+  narinfo or its NAR was. The record is on disk, so a restart loses nothing. A client that probes every path, with
+  `HEAD` or narinfo `GET`s, keeps every path recent. If the box cannot set times on its files (it does not own them),
+  it logs a warning once and eviction goes by when files were stored.
+- **When it runs.** Inside `kasha serve`, with or without a remote cache: every 5 minutes while NAR bytes arrive or the
+  last pass left work, hourly on a quiet box, and within 5 seconds once the NAR bytes pulled through or pushed since the
+  last pass could take the unlisted paths over the cap. `kasha sweep` runs a pass too.
 - **How far.** Over the cap, a pass removes the least recently used until 90% of the cap is left, so the next pass is
-  not due at the next path stored. A path used in the last 10 minutes is never evicted: its client may not have fetched
-  the NAR yet. If such paths alone exceed the cap, the store stays over it until they age.
+  not due at the next path stored. A path used in the last 10 minutes is never evicted, so the store can exceed the cap
+  by the paths stored or read in the last 10 minutes; eviction does not look at free disk space.
+- **Who may get a `404`.** A client that fetched a narinfo and asks for its NAR more than 10 minutes later: one
+  substituting a large closure queries every narinfo before it downloads, and a long-lived consumer caches positive
+  narinfos for 30 days. If the path was evicted meanwhile, the NAR request gets `404` and Nix falls back to its next
+  substituter.
 - **Generation retention.** Listed paths are kept as before. Unlisted narinfos are no longer swept by age. A path whose
   last retained manifest goes keeps the time of its last use, so an unused one is first in line.
 
-A narinfo is always removed before its NAR, and a NAR only once no remaining narinfo names it and no pull-through fetch
-is producing or reusing it, so the box never serves a narinfo whose NAR it has removed. A NAR no narinfo names goes
-after the grace window, as in the sweep. An eviction that fails is logged and retried on the next pass; requests never
-wait on one.
+A narinfo is always removed before its NAR, and a NAR only once no remaining narinfo names it. A path whose NAR a
+pull-through fetch is producing or reusing is left whole. Mirror-down writes a narinfo only if the NAR it counted on is
+still there, and keeps the path a gap otherwise. So inside `kasha serve` no deletion leaves a narinfo without its NAR;
+`kasha sweep` in a separate process shares no lock with `serve` and keeps the narrow window the sweep always had. A NAR
+no narinfo names goes after the grace window, as in the sweep. A removal that fails is logged and stops the pass: the
+narinfo already removed leaves its NAR behind for the grace window, and the next pass tries again. Requests never wait
+on a pass.
 
 A manifest that lists a pulled-through path retains it like any other path: the sweep looks at what manifests list,
 not at how a path arrived.

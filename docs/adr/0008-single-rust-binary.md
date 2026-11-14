@@ -1,5 +1,12 @@
 # Box is one static Rust binary over a flat binary-cache store
 
+**Partly superseded by [ADR-0011](0011-optional-pull-through.md)** — with the optional
+pull-through mode on, its design record's serve contract (`404` on every miss) is the
+default rather than the only behaviour, ADR-0001 no longer survives unchanged, manifest
+presence decides retention only for paths a manifest lists, box-retained ⊆ remote-retained
+holds for generations only, and a pulled-through narinfo is not stored as received. The
+rest stands.
+
 Supersedes ADR-0002 (nix-native box store), ADR-0003 (roots-only manifests), and
 ADR-0006 (bash reusable tools). ADR-0001 (eager bidirectional replica) and ADR-0004
 (box holds no signing key) survive unchanged. Design record:

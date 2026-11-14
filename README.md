@@ -183,7 +183,9 @@ macOS builds are not published — CI has no darwin runner. `nix build .#kasha` 
 
 ## Out of scope (deliberate, see docs/agents/handoff-rewrite.md)
 
-- Pull-through serving on miss.
 - Re-compression (objects stored byte-identical as received).
 - Mirror-up filtering (push everything the remote lacks).
 - mDNS discovery and localhost selection shim.
+
+Pull-through serving on a miss is decided as an optional mode in
+[ADR-0011](docs/adr/0011-optional-pull-through.md) and is not implemented yet.

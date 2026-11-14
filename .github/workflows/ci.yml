@@ -10,11 +10,10 @@ on:
   push:
     branches: [main]
   pull_request:
-  # release.yml calls this after cutting a release, to republish the same closure
-  # under a generation named for the tag rather than for `main`. Not a `tags:`
-  # trigger: release-please creates the tag with GITHUB_TOKEN, and a tag pushed
-  # with GITHUB_TOKEN fires no workflow, so that trigger would be silently dead
-  # here. A direct call has no such rule.
+  # release-please.yml calls this after cutting a release, to republish the same
+  # closure under a generation named for the tag rather than for `main`. Not a
+  # `tags:` trigger: the direct call passes the tag as `manifest-branch` and does
+  # not depend on which token pushed the tag.
   workflow_call:
     inputs:
       manifest-branch:
@@ -150,7 +149,7 @@ jobs:
           # finishes last overwrite the other's manifest.
           attr: checks.${{ matrix.system }}
           # Empty on push and pull_request, where emit-manifest falls back to the
-          # ref name. Set only by release.yml.
+          # ref name. Set only by release-please.yml.
           branch: ${{ inputs.manifest-branch }}
           s3-url: ${{ vars.CACHE_S3_URL }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}

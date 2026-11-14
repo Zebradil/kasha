@@ -20,9 +20,9 @@ manifest, or dropped by generation retention, is unlisted as well.
   narinfo's and its NAR's. It lives on disk, so a restart loses nothing.
 - *Eviction* runs in `serve`, with or without a remote cache: a pass every 5 minutes, and one
   within 5 seconds once the NAR bytes pulled through or pushed since the last pass could take the
-  unlisted paths over the cap. Over it, the least recently used go until 90% of the cap is left.
-  A path used in the last 10 minutes is never evicted, so the store can exceed the cap by what
-  clients are fetching. `kasha sweep` runs a pass too.
+  unlisted paths over the cap, and are at least a tenth of it. Over it, the least recently used
+  go until 90% of the cap is left. A path used in the last 10 minutes is never evicted, so the
+  store can exceed the cap by what clients are fetching. `kasha sweep` runs a pass too.
 - *Generation retention* is unchanged for listed paths. Under the cap the sweep no longer
   deletes unlisted narinfos by age; a path that leaves its last retained manifest becomes
   unlisted with the recency of its last use, so an unused one goes first.

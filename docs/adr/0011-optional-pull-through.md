@@ -1,5 +1,9 @@
 # Pull-through on a miss is an optional box mode, beside the eager replica
 
+**Partly superseded by [ADR-0012](0012-pulled-through-nars-as-zstd.md)** — a pulled-through
+NAR is stored as zstd, not as received: the box's narinfo always says `Compression: zstd`, and
+"its NAR still is" and the **Compression** paragraph no longer hold. The rest stands.
+
 Supersedes parts of ADR-0001 (eager bidirectional replica, not a pull-through proxy) and
 ADR-0008 (single Rust binary), listed below. The eager replica itself and ADR-0004 (box
 holds no signing key) survive unchanged. Issue: #65. Nix behaviour is cited from its source

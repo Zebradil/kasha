@@ -57,8 +57,9 @@ The box needs read/write (never delete) remote credentials via `AWS_ACCESS_KEY_I
 A box that serves many short-lived consumers, such as ephemeral build VMs that start every job with an empty store, can
 fetch what it lacks instead of answering `404`. With `KASHA_PULL_THROUGH=true`, a `GET` for a narinfo the box does not
 hold is looked up on the remote cache, then on each of `KASHA_UPSTREAMS`. The box answers the narinfo at once, downloads
-the NAR in the background, checks it against `NarHash` and `NarSize`, and stores both. Later consumers read the path
-from the box. It works without `KASHA_REMOTE`, and it needs each upstream's public key in `KASHA_TRUSTED_KEYS`.
+the NAR in the background, checks it against `NarHash` and `NarSize`, and stores both, the NAR as zstd whatever the
+source's encoding. Later consumers read the path from the box. It works without `KASHA_REMOTE`, and it needs each
+upstream's public key in `KASHA_TRUSTED_KEYS`.
 
 | Variable                            | Meaning                                                             | Default |
 | ----------------------------------- | ------------------------------------------------------------------- | ------- |
@@ -205,6 +206,7 @@ macOS builds are not published — CI has no darwin runner. `nix build .#kasha` 
 
 ## Out of scope (deliberate, see docs/agents/handoff-rewrite.md)
 
-- Re-compression (objects stored byte-identical as received).
+- Re-compression of pushed and mirrored objects (stored byte-identical as received; only pulled-through NARs are stored
+  as zstd, [ADR-0012](docs/adr/0012-pulled-through-nars-as-zstd.md)).
 - Mirror-up filtering (push everything the remote lacks).
 - mDNS discovery and localhost selection shim.

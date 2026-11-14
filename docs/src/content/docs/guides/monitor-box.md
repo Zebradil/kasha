@@ -41,10 +41,14 @@ needs no authentication.
 | `kasha_ingest_requests_total{result}` | counter | pushes, `result` is `accepted`, `rejected` (bad content or signature) or `unauthorized` |
 | `kasha_last_sweep_timestamp_seconds` | gauge | start of the last box GC sweep attempt; absent until the first sweep |
 | `kasha_sweep_deleted_objects_total` | counter | narinfos and NARs the box GC deleted |
+| `kasha_unlisted_bytes` | gauge | bytes of paths no retained manifest lists (their narinfos, and NARs only they name) after the last eviction pass |
+| `kasha_unlisted_paths` | gauge | number of those paths after the last eviction pass |
+| `kasha_unlisted_evictions_total` | counter | paths eviction removed |
+| `kasha_unlisted_evicted_bytes_total` | counter | bytes of the narinfos and NARs eviction removed |
 | `kasha_generation_published_timestamp_seconds{flake,branch}` | gauge | `timestamp` of the newest manifest on the box for the branch: when its producer last published |
 | `kasha_generation_arrived_timestamp_seconds{flake,branch}` | gauge | when the box last stored a new manifest for the branch (the manifest file's mtime, so it survives restarts) |
 | `kasha_nar_bytes_total{direction,source}` | counter | NAR bytes moved: `down` (mirror-down, `source` is `remote` or `upstream`), `up` (mirror-up), `served` (GETs by clients), `ingest` (pushes) or `pull` (pull-through, `source` as for `down`; bytes as the source sent them, before re-encoding) |
-| `kasha_nar_age_objects{le}` | gauge | NARs on disk stored at most `le` seconds ago, cumulative like a histogram |
+| `kasha_nar_age_objects{le}` | gauge | NARs on disk stored (with `KASHA_UNLISTED_MAX_BYTES` set: last used) at most `le` seconds ago, cumulative like a histogram |
 | `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
 | `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |
 | `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer), `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) or `busy` (a quarter of `KASHA_MAX_INFLIGHT` narinfo requests already wait on a lookup) |
@@ -62,6 +66,11 @@ answered by pull-through counts as a `hit` in `kasha_narinfo_requests_total`. A 
 high means the downloads cannot keep up: raise `KASHA_PULL_THROUGH_WORKERS`. A rising `failed` count is explained in
 the logs (`narinfo lookup failed`, `pull-through fetch failed`). A rising `busy` count in either metric means consumers
 are being sent away: raise `KASHA_MAX_INFLIGHT`.
+
+The `kasha_unlisted_*` metrics exist only with `KASHA_UNLISTED_MAX_BYTES` set. `kasha_unlisted_bytes` sits at or below
+the cap after a pass; above it, paths used in the last 10 minutes alone exceed the cap, which no pass can fix: raise the
+cap. A steady rise of `kasha_unlisted_evictions_total` is the cap working; a steep one, with clients pulling the same
+paths through again, means the cap is smaller than their working set.
 
 The generation metrics and the `down`/`up` byte counters, like `last_sync`, need a remote cache: they come from the sync
 cycle. Last sync says the box checked; the generation timestamps say whether there was anything new to fetch.
@@ -120,6 +129,7 @@ Lines worth alerting on:
 | `mirror-down failed` | warn | the remote cache could not be listed or read this cycle |
 | `mirror-up deferred` | warn | a local-origin generation could not be pushed up yet |
 | `box sweep failed` | warn | the in-process GC sweep hit an error |
+| `eviction pass failed`, `eviction failed` | warn | an eviction pass, or the removal of one file in it, hit an error; the next pass retries |
 | `rejected ingest` | warn | a push was refused, e.g. an untrusted signature |
 | `unauthorized write` | warn | a write arrived without a valid token |
 

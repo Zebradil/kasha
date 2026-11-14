@@ -36,7 +36,8 @@ Both sweeps are mark-and-sweep:
    narinfo references.
 3. Mark the NARs the marked narinfos point to.
 4. Delete every unmarked narinfo and NAR, except objects younger than the grace window (24 hours). The box sweep also
-   keeps the NAR of every narinfo it keeps, however old the NAR is.
+   keeps the NAR of every narinfo it keeps, however old the NAR is, and under a size cap it keeps every unmarked
+   narinfo: [eviction](#unlisted-paths-and-the-size-cap) decides for those.
 
 The remote sweep also deletes the manifests retention did not keep, and anything under `roots/` that is not a valid v3
 manifest. The box sweep deletes no manifests: mirror-down drops a local manifest once it disappears from the remote, so
@@ -47,6 +48,10 @@ remote retention reaches the box through sync.
 Writers publish a manifest after every path it lists, and the grace window skips any object younger than 24 hours. A
 sweep running during a push therefore leaves the push's objects alone until the manifest lands and marks them. Re-running
 a sweep is harmless: it deletes what the previous run missed.
+
+Every narinfo written to the box makes the NAR it names young, and inside `kasha serve` each NAR removal is decided
+under the same lock as that write. So a sweep or an eviction pass never removes a NAR that gained a narinfo after it
+listed the store.
 
 `kasha sweep` runs the box sweep from a separate process, next to a running `kasha serve`, so the server's in-memory
 index cannot see its deletions directly. The sweep stamps `state/last-sweep` when it finishes, and at the start of its
@@ -60,16 +65,41 @@ Two more guards protect data only the box holds:
 - A box with no manifests at all skips its sweep. An empty mark set would delete the whole store, and an unsynced store
   (a fresh volume, a restored backup) is not a retention decision.
 
-## Pulled-through paths
+## Unlisted paths and the size cap
 
-A path that [pull-through](../eager-replica/#pull-through-on-a-miss) stored is in no manifest, and generation retention
-is all the box has today. Until eviction by use under a size cap exists, a pull-through box behaves like this:
+An **unlisted** path is one no retained manifest lists: a path [pull-through](../eager-replica/#pull-through-on-a-miss)
+stored, a path pushed without a manifest, or a path whose generation retention dropped. Generation retention cannot
+decide for these. What happens to them depends on `KASHA_UNLISTED_MAX_BYTES`, on `kasha serve` and `kasha sweep`.
 
-- **With manifests** (a remote cache, or generations pushed to it): the box sweep deletes a pulled-through path once it
-  is past the 24-hour grace window, however often it is read. The next request pulls it through again.
+**Unset** (the default), the box behaves as it always did:
+
+- **With manifests** (a remote cache, or generations pushed to it): the box sweep deletes an unlisted path once it is
+  past the 24-hour grace window, however often it is read. The next request pulls it through again.
 - **Without manifests**: the sweep is skipped, and without `KASHA_REMOTE` the GC timer does not run at all. Nothing is
-  ever deleted, the store grows until the volume is full, and anyone who can reach the box can fill it. Size the volume
-  for it, restrict who can reach the box, or clear the volume on a schedule.
+  ever deleted, the store grows until the volume is full, and anyone who can reach the box can fill it.
+
+**Set**, the box keeps unlisted paths within that many bytes and evicts the least recently used first, with or without
+a remote cache or manifests:
+
+- **What counts.** File sizes: each unlisted narinfo, and each NAR only unlisted narinfos name, once however many name
+  it. A NAR that a listed path names counts toward nothing and is never evicted. An old `.nar.xz` and a `.nar.zst` of
+  the same NAR are two files.
+- **What use is.** A `GET` or `HEAD` of a narinfo or NAR, or storing it. The box records it as the file's modification
+  time, rewritten at most once a minute per file; a path was last used when its narinfo or its NAR was. The record is
+  on disk, so a restart loses nothing. One consequence: on such a box the NAR age metrics measure time since last use,
+  not since the box stored the file.
+- **When it runs.** Inside `kasha serve`, every 5 minutes, and within 5 seconds once the NAR bytes pulled through or
+  pushed since the last pass could take the unlisted paths over the cap. `kasha sweep` runs a pass too.
+- **How far.** Over the cap, a pass removes the least recently used until 90% of the cap is left, so the next pass is
+  not due at the next path stored. A path used in the last 10 minutes is never evicted: its client may not have fetched
+  the NAR yet. If such paths alone exceed the cap, the store stays over it until they age.
+- **Generation retention.** Listed paths are kept as before. Unlisted narinfos are no longer swept by age. A path whose
+  last retained manifest goes keeps the time of its last use, so an unused one is first in line.
+
+A narinfo is always removed before its NAR, and a NAR only once no remaining narinfo names it and no pull-through fetch
+is producing or reusing it, so the box never serves a narinfo whose NAR it has removed. A NAR no narinfo names goes
+after the grace window, as in the sweep. An eviction that fails is logged and retried on the next pass; requests never
+wait on one.
 
 A manifest that lists a pulled-through path retains it like any other path: the sweep looks at what manifests list,
 not at how a path arrived.

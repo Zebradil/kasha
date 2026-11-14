@@ -79,7 +79,7 @@ lists them with defaults. The ones you may want to change:
 
 To sweep now instead of waiting for the interval, run `kasha sweep` inside the running container, for example
 `kubectl exec deploy/kasha -- /bin/kasha sweep`. It reads the same `KASHA_DATA`, prints each deleted object, and resets
-the interval.
+the interval. With `KASHA_UNLISTED_MAX_BYTES` set it also runs an eviction pass and prints each evicted object.
 
 ## 5. Check it
 
@@ -104,10 +104,12 @@ does.
 docker run -d -p 5000:5000 -v kasha-data:/kasha \
   -e KASHA_TRUSTED_KEYS='cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=' \
   -e KASHA_PULL_THROUGH=true \
+  -e KASHA_UNLISTED_MAX_BYTES=100000000000 \
   ghcr.io/zebradil/kasha-box:edge
 ```
 
-That box has no remote cache: it pulls through from `KASHA_UPSTREAMS`, `https://cache.nixos.org` by default. With
+That box keeps what it pulled through within 100 GB, evicting the least recently used paths first. It has no remote
+cache: it pulls through from `KASHA_UPSTREAMS`, `https://cache.nixos.org` by default. With
 `KASHA_REMOTE` set, the remote cache is asked first, at the cost of one more round trip before each upstream lookup.
 Consumers can list the box as their only substituter, or put it first. With the box as the only substituter, every
 `404` it answers means that consumer builds the path from source, or fails if it cannot: a path no source has, a source
@@ -121,15 +123,19 @@ that is what you want.
 | `KASHA_PULL_THROUGH_WORKERS` | `8` | concurrent NAR downloads |
 | `KASHA_PULL_THROUGH_MAX_PENDING` | `4096` | cap on paths answered but not stored yet, queued downloads included; past it a narinfo miss is `404` |
 | `KASHA_PULL_THROUGH_LOOKUP_TIMEOUT` | `10` | seconds a source gets to accept a connection and to answer a narinfo lookup |
-| `KASHA_PULL_THROUGH_STALL_TIMEOUT` | `60` | seconds a NAR download may receive nothing before it is dropped |
+| `KASHA_PULL_THROUGH_STALL_TIMEOUT` | `60` | seconds a NAR download may receive nothing before it is dropped; below `3600` |
+| `KASHA_UNLISTED_MAX_BYTES` | unset | bytes kept of paths no retained manifest lists, pulled-through ones included; the least recently used go first. Unset, nothing evicts them |
 
 Before you enable it:
 
 - **Add every upstream's key** to `KASHA_TRUSTED_KEYS`. Without it the box takes only content-addressed paths from that
   upstream and answers `404` for the rest.
-- **Plan the disk.** Nothing evicts pulled-through paths by use yet, and anyone who can reach the box can make it
-  download what its sources serve. A box without `KASHA_REMOTE` never sweeps on its own and grows until the volume is
-  full. See [Retention and GC](../../concepts/retention/#pulled-through-paths).
+- **Set a size cap.** Anyone who can reach the box can make it download what its sources serve. Without
+  `KASHA_UNLISTED_MAX_BYTES`, a box without manifests never deletes a pulled-through path and grows until the volume is
+  full; with manifests, the sweep deletes each a day after it arrived, however often it is read. Leave room on the
+  volume above the cap: for generations manifests retain, for paths used in the last 10 minutes, which are never
+  evicted, and for what arrives in the seconds before a pass. See
+  [Retention and GC](../../concepts/retention/#unlisted-paths-and-the-size-cap).
 - **Budget CPU for the workers.** Each download is decoded to be checked and, unless the source serves zstd, encoded
   again as zstd, on one core per busy worker.
 - **Size `KASHA_MAX_INFLIGHT` for NAR waits.** A request that waits on a source holds a slot until the source answers.

@@ -49,6 +49,7 @@ Environment contract (all also available as flags, see `kasha serve --help`):
 | `KASHA_MAX_INFLIGHT`                        | cap on concurrent requests; each in-flight response holds a slot until it ends  | `256`                     |
 | `KASHA_PRIORITY`                            | `Priority` advertised in `nix-cache-info`; Nix asks lower numbers first         | `10`                      |
 | `KASHA_PULL_THROUGH`                        | fetch, verify and keep a path on a narinfo miss (see below)                     | off                       |
+| `KASHA_UNLISTED_MAX_BYTES`                  | bytes kept of paths no retained manifest lists; least recently used go first    | —                         |
 
 The box needs read/write (never delete) remote credentials via `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
@@ -61,17 +62,18 @@ the NAR in the background, checks it against `NarHash` and `NarSize`, and stores
 source's encoding. Later consumers read the path from the box. It works without `KASHA_REMOTE`, and it needs each
 upstream's public key in `KASHA_TRUSTED_KEYS`.
 
-| Variable                            | Meaning                                                             | Default |
-| ----------------------------------- | ------------------------------------------------------------------- | ------- |
-| `KASHA_PULL_THROUGH_NEGATIVE_TTL`   | seconds a path no source has is answered `404` without asking again | `60`    |
-| `KASHA_PULL_THROUGH_WORKERS`        | concurrent NAR downloads                                            | `8`     |
-| `KASHA_PULL_THROUGH_MAX_PENDING`    | cap on paths answered but not stored yet; past it a miss is `404`   | `4096`  |
-| `KASHA_PULL_THROUGH_LOOKUP_TIMEOUT` | seconds a source gets to connect and to answer a narinfo lookup     | `10`    |
-| `KASHA_PULL_THROUGH_STALL_TIMEOUT`  | seconds a NAR download may receive nothing before it is dropped     | `60`    |
+| Variable                            | Meaning                                                                      | Default |
+| ----------------------------------- | ---------------------------------------------------------------------------- | ------- |
+| `KASHA_PULL_THROUGH_NEGATIVE_TTL`   | seconds a path no source has is answered `404` without asking again          | `60`    |
+| `KASHA_PULL_THROUGH_WORKERS`        | concurrent NAR downloads                                                     | `8`     |
+| `KASHA_PULL_THROUGH_MAX_PENDING`    | cap on paths answered but not stored yet; past it a miss is `404`            | `4096`  |
+| `KASHA_PULL_THROUGH_LOOKUP_TIMEOUT` | seconds a source gets to connect and to answer a narinfo lookup              | `10`    |
+| `KASHA_PULL_THROUGH_STALL_TIMEOUT`  | seconds (under 3600) a NAR download may receive nothing before it is dropped | `60`    |
 
-Nothing bounds the disk a pull-through box uses yet: see
-[Retention and GC](docs/src/content/docs/concepts/retention.md#pulled-through-paths) before enabling it. Design:
-[ADR-0011](docs/adr/0011-optional-pull-through.md).
+Pulled-through paths are in no manifest. Set `KASHA_UNLISTED_MAX_BYTES` to keep them within a size, the least recently
+used evicted first; unset, a box without manifests never deletes them. See
+[Retention and GC](docs/src/content/docs/concepts/retention.md#unlisted-paths-and-the-size-cap). Design:
+[ADR-0011](docs/adr/0011-optional-pull-through.md), [ADR-0013](docs/adr/0013-unlisted-paths-lru-size-cap.md).
 
 ## Wire consumer selection into one host
 

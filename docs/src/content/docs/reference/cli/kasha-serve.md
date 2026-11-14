@@ -27,6 +27,8 @@ Options:
           Seconds to sleep between sync cycles (mirror-down, then mirror-up) [env: KASHA_SYNC_INTERVAL=] [default: 300]
       --gc-interval-secs <GC_INTERVAL_SECS>
           Minimum seconds between box GC sweeps, checked after each sync cycle [env: KASHA_GC_INTERVAL=] [default: 86400]
+      --unlisted-max-bytes <UNLISTED_MAX_BYTES>
+          Keep unlisted paths, those no retained manifest lists, within this many bytes by evicting the least recently used (ADR-0013). Unset, the sweep alone decides for them, by age [env: KASHA_UNLISTED_MAX_BYTES=]
       --max-inflight <MAX_INFLIGHT>
           Cap on concurrent requests. Each in-flight response holds a slot for its whole transfer, so this bounds slow readers, not CPU [env: KASHA_MAX_INFLIGHT=] [default: 256]
       --priority <PRIORITY>
@@ -42,7 +44,7 @@ Options:
       --pull-through-lookup-timeout-secs <PULL_THROUGH_LOOKUP_TIMEOUT_SECS>
           Seconds a source gets to accept a connection and to answer a narinfo lookup [env: KASHA_PULL_THROUGH_LOOKUP_TIMEOUT=] [default: 10]
       --pull-through-stall-timeout-secs <PULL_THROUGH_STALL_TIMEOUT_SECS>
-          Seconds a NAR download may receive nothing before it is dropped [env: KASHA_PULL_THROUGH_STALL_TIMEOUT=] [default: 60]
+          Seconds a NAR download may receive nothing before it is dropped; under 3600, the age at which a temp file counts as abandoned [env: KASHA_PULL_THROUGH_STALL_TIMEOUT=] [default: 60]
   -h, --help
           Print help
 ```

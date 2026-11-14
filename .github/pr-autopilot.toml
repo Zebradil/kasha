@@ -5,7 +5,7 @@ enabled = true
 # Documentation only — the engine never reads this table (ADR 0012). It records what
 # onboarding concluded about this repository, and why the policy below looks the way it does.
 [risk]
-# release-please-config.json + release.yml: Conventional Commits drive the release PR, merging
+# release-please-config.json + release-please.yml: Conventional Commits drive the release PR, merging
 # it tags an exact semver and republishes the closure under a generation named for the tag.
 release_mode = "release-please"
 

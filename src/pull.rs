@@ -5,7 +5,8 @@
 //! the trust check and names the requested path is answered at once, rendered
 //! with a `URL` the box derives from `NarHash`. Its NAR is downloaded on a
 //! worker pool, checked against `NarHash` and `NarSize`, and only then stored,
-//! followed by the narinfo; until then the narinfo lives in memory.
+//! followed by the narinfo; until then the narinfo lives in memory. The NAR
+//! is stored as zstd whatever the source's encoding (ADR-0012).
 //!
 //! Nothing else starts a fetch. `HEAD` reports what the store holds, and
 //! `GET nar/<file>` waits for a fetch of that file already in flight.
@@ -419,7 +420,7 @@ impl Pull {
         }
         // Answering a narinfo whose NAR cannot be verified would promise a
         // path the box can never store.
-        let (Some(nar_hash), Some(ext)) = (info.nar_sha256(), extension(&info.compression)) else {
+        let (Some(nar_hash), true) = (info.nar_sha256(), decodable(&info.compression)) else {
             tracing::warn!(
                 hash,
                 source,
@@ -429,8 +430,10 @@ impl Pull {
             );
             return Probe::Failed;
         };
-        let file = format!("{}.nar{ext}", nix32_encode(&nar_hash));
-        let text = render(&raw, &file, &info.compression, None);
+        // Named and labelled zstd here, before the download: the answer below
+        // already promises both to clients.
+        let file = format!("{}.nar.zst", nix32_encode(&nar_hash));
+        let text = render(&raw, &file, None);
         Probe::Found(Box::new(Pending {
             hash: hash.to_string(),
             raw,
@@ -547,9 +550,9 @@ impl Pull {
             return Ok(Outcome::Abandoned);
         }
         let dest = self.store.nar_path(&p.file)?;
-        // A NAR of this name can already be there: another path with the
-        // same contents, or a pushed uncompressed NAR, which nix also names
-        // by its hash. It is kept, and has to be this NAR.
+        // A NAR of this name can already be there, from another path with the
+        // same contents. It is kept, and has to be this NAR; it is decoded to
+        // tell, so the zstd bytes need not match what this fetch would write.
         let (mut tmp, mut meta) = if dest.is_file() {
             (None, self.verify_stored(&dest, p)?)
         } else {
@@ -557,7 +560,7 @@ impl Pull {
             (Some(tmp), meta)
         };
         loop {
-            let raw = render(&p.raw, &p.file, &p.info.compression, Some(&meta));
+            let raw = render(&p.raw, &p.file, Some(&meta));
             let info = NarInfo::parse(&raw)?;
             let nar_tmp = tmp.as_ref().map(|t| t.0.as_path());
             match self.store.publish_pulled(&info, raw.as_bytes(), nar_tmp)? {
@@ -574,14 +577,9 @@ impl Pull {
 
     fn verify_stored(&self, path: &Path, p: &Pending) -> Result<FileMeta> {
         let file = File::open(path)?;
-        verify(
-            file,
-            None,
-            &p.info.compression,
-            &p.nar_hash,
-            p.info.nar_size,
-        )
-        .with_context(|| format!("stored NAR {} is not this path's NAR", p.file))
+        let (meta, _) = verify(file, None, STORED, &p.nar_hash, p.info.nar_size)
+            .with_context(|| format!("stored NAR {} is not this path's NAR", p.file))?;
+        Ok(meta)
     }
 
     fn download(&self, p: &Pending) -> Result<(TempFile, FileMeta)> {
@@ -593,7 +591,7 @@ impl Pull {
             .with_context(|| format!("GET {}", p.info.url))?;
         let (tmp, mut file) = self.store.nar_temp(&p.file)?;
         let tmp = TempFile(tmp);
-        let meta = verify(
+        let (meta, received) = verify(
             resp.into_body().into_reader(),
             Some(&mut file),
             &p.info.compression,
@@ -606,7 +604,7 @@ impl Pull {
         } else {
             &self.stats.bytes_upstream
         };
-        bytes.fetch_add(meta.size, Ordering::Relaxed);
+        bytes.fetch_add(received, Ordering::Relaxed);
         Ok((tmp, meta))
     }
 }
@@ -617,16 +615,18 @@ struct FileMeta {
     size: u64,
 }
 
-/// NAR file extension for a `Compression` the box can decode, hence verify.
-fn extension(compression: &str) -> Option<&'static str> {
-    match compression {
-        "none" => Some(""),
-        "xz" => Some(".xz"),
-        "zstd" => Some(".zst"),
-        "bzip2" => Some(".bz2"),
-        _ => None,
-    }
+/// A `Compression` the box can decode, hence verify.
+fn decodable(compression: &str) -> bool {
+    matches!(compression, "none" | "xz" | "zstd" | "bzip2")
 }
+
+/// The encoding of every NAR pull-through stores (ADR-0012).
+const STORED: &str = "zstd";
+
+/// Decoding takes as long at every zstd level; level 3 encodes about 2.5
+/// times faster than 6 for a 5% larger file, and a client may be waiting
+/// (ADR-0012).
+const ZSTD_LEVEL: i32 = 3;
 
 /// Memory one xz decoder may use. Covers every xz preset (the largest
 /// needs 65 MiB); a source cannot make a worker allocate more with a huge
@@ -651,12 +651,12 @@ fn decoder<'a>(compression: &str, r: impl Read + 'a) -> Result<Box<dyn Read + 'a
 /// `URL` and `Compression` written by the box and `FileHash`/`FileSize`
 /// dropped, or set to the stored file's once there is one. Signatures stay
 /// valid: they cover none of these fields.
-fn render(raw: &str, file: &str, compression: &str, stored: Option<&FileMeta>) -> String {
+fn render(raw: &str, file: &str, stored: Option<&FileMeta>) -> String {
     let mut out = String::with_capacity(raw.len() + 128);
     for line in raw.lines() {
         match line.split_once(": ").map(|(key, _)| key) {
             Some("URL") => {
-                out += &format!("URL: nar/{file}\nCompression: {compression}\n");
+                out += &format!("URL: nar/{file}\nCompression: {STORED}\n");
                 if let Some(m) = stored {
                     out += &format!(
                         "FileHash: sha256:{}\nFileSize: {}\n",
@@ -676,35 +676,56 @@ fn render(raw: &str, file: &str, compression: &str, stored: Option<&FileMeta>) -
     out
 }
 
-/// Slack over `NarSize` allowed to a compressed file before the download is
-/// cut: no encoding grows a NAR by more than a sliver, and an endless body
-/// that decodes to nothing would otherwise fill the disk.
+/// Slack over `NarSize` allowed to a compressed file, received or written,
+/// before the download is cut: no encoding grows a NAR by more than a
+/// sliver, and an endless body that decodes to nothing would otherwise fill
+/// the disk.
 const ENCODING_SLACK: u64 = 1024 * 1024;
 
-/// Read a NAR file from `body`, copying it to `sink` if there is one, and
-/// check that it decompresses to `nar_size` bytes hashing to `nar_hash`.
+/// Read a NAR file from `body` and check that it decompresses to `nar_size`
+/// bytes hashing to `nar_hash`. With `out`, also write the file to store
+/// there: the body itself if it is already zstd, else the NAR encoded as
+/// zstd. Returns that file's hash and size, or the body's without `out`,
+/// and the number of bytes read from `body`.
 fn verify(
     body: impl Read,
-    sink: Option<&mut File>,
+    out: Option<&mut File>,
     compression: &str,
     nar_hash: &[u8; 32],
     nar_size: u64,
-) -> Result<FileMeta> {
+) -> Result<(FileMeta, u64)> {
+    let max = nar_size + nar_size / 2 + ENCODING_SLACK;
+    let (copy, encode) = match out {
+        Some(f) if compression == STORED => (Some(f), None),
+        other => (None, other),
+    };
+    let encoder = encode
+        .map(|f| {
+            let counted = Counted {
+                inner: f,
+                hasher: Sha256::new(),
+                len: 0,
+                max,
+            };
+            zstd::stream::write::Encoder::new(counted, ZSTD_LEVEL)
+        })
+        .transpose()?;
     let mut tee = Tee {
         inner: body,
-        sink,
+        sink: copy,
         hasher: Sha256::new(),
         len: 0,
-        max: nar_size + nar_size / 2 + ENCODING_SLACK,
+        max,
     };
     let mut nar = NarSink {
         hasher: Sha256::new(),
         len: 0,
         max: nar_size,
+        encoder,
     };
     std::io::copy(&mut decoder(compression, &mut tee)?, &mut nar)?;
     // The decoder may stop before the end of the body; the rest still
-    // belongs to the file.
+    // belongs to it, and to the file when that is a copy.
     std::io::copy(&mut tee, &mut std::io::sink())?;
     ensure!(
         nar.len == nar_size,
@@ -715,10 +736,20 @@ fn verify(
         <[u8; 32]>::from(nar.hasher.finalize()) == *nar_hash,
         "NAR does not hash to NarHash"
     );
-    Ok(FileMeta {
-        hash: tee.hasher.finalize().into(),
-        size: tee.len,
-    })
+    let file = match nar.encoder {
+        Some(e) => {
+            let written = e.finish()?;
+            FileMeta {
+                hash: written.hasher.finalize().into(),
+                size: written.len,
+            }
+        }
+        None => FileMeta {
+            hash: tee.hasher.finalize().into(),
+            size: tee.len,
+        },
+    };
+    Ok((file, tee.len))
 }
 
 /// Hashes and counts what passes through, optionally copying it to a file.
@@ -747,25 +778,56 @@ impl<R: Read> Read for Tee<'_, R> {
     }
 }
 
-/// Hashes and counts the decompressed NAR, refusing more than `NarSize`.
-struct NarSink {
+/// Hashes and counts the decompressed NAR, refusing more than `NarSize`,
+/// and passes it on to the encoder if there is one.
+struct NarSink<'a> {
     hasher: Sha256,
     len: u64,
     max: u64,
+    encoder: Option<zstd::stream::write::Encoder<'static, Counted<&'a mut File>>>,
 }
 
-impl Write for NarSink {
+impl Write for NarSink<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.len += buf.len() as u64;
         if self.len > self.max {
             return Err(std::io::Error::other("NAR larger than NarSize"));
         }
         self.hasher.update(buf);
+        if let Some(e) = &mut self.encoder {
+            e.write_all(buf)?;
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// Hashes and counts what is written to `inner`, refusing more than `max`.
+struct Counted<W> {
+    inner: W,
+    hasher: Sha256,
+    len: u64,
+    max: u64,
+}
+
+impl<W: Write> Write for Counted<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.len += buf.len() as u64;
+        if self.len > self.max {
+            return Err(std::io::Error::other(
+                "stored file larger than any encoding of the NAR",
+            ));
+        }
+        self.hasher.update(buf);
+        self.inner.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -786,6 +848,8 @@ mod tests {
         log: Mutex<Vec<String>>,
         /// Keys answered with this status instead of their object.
         broken: Mutex<HashMap<String, u16>>,
+        /// Keys answered with this chunk repeated forever.
+        endless: Mutex<HashMap<String, Vec<u8>>>,
         /// Requests for keys with this prefix wait until it is cleared.
         hold: Mutex<Option<String>>,
         released: Condvar,
@@ -819,6 +883,12 @@ mod tests {
                     .wait_while(hold, |h| h.as_deref().is_some_and(|p| key.starts_with(p)))
                     .unwrap(),
             );
+            if let Some(chunk) = self.endless.lock().unwrap().get(&key).cloned() {
+                let body = Endless { chunk, at: 0 };
+                let resp = tiny_http::Response::new(200.into(), vec![], body, None, None);
+                let _ = req.respond(resp);
+                return;
+            }
             let status = self.broken.lock().unwrap().get(&key).copied();
             let object = self.objects.lock().unwrap().get(&key).cloned();
             let _ = match (status, object) {
@@ -863,6 +933,20 @@ mod tests {
         }
     }
 
+    struct Endless {
+        chunk: Vec<u8>,
+        at: usize,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.chunk.len() - self.at);
+            buf[..n].copy_from_slice(&self.chunk[self.at..self.at + n]);
+            self.at = (self.at + n) % self.chunk.len();
+            Ok(n)
+        }
+    }
+
     fn key() -> SigningKey {
         SigningKey::from_bytes(&[11u8; 32])
     }
@@ -900,6 +984,8 @@ mod tests {
         file: Vec<u8>,
         /// The name the box stores the NAR file under.
         box_file: String,
+        /// The NAR itself.
+        nar: Vec<u8>,
     }
 
     fn sign(sk: &SigningKey, body: &str) -> String {
@@ -913,8 +999,7 @@ mod tests {
         let file = encode(compression, &nar);
         let hash: String = std::iter::repeat_n(c, 32).collect();
         let nar_hash = nix32_encode(&Sha256::digest(&nar));
-        let ext = extension(compression).unwrap();
-        let key = format!("nar/upstream-{c}.nar{ext}");
+        let key = format!("nar/upstream-{c}.{compression}");
         // FileHash and FileSize are the upstream's, deliberately not those of
         // the file: the box must write its own.
         let body = format!(
@@ -935,7 +1020,8 @@ Deriver: {hash}-pkg-{c}.drv\n",
             narinfo: sign(sk, &body),
             key,
             file,
-            box_file: format!("{nar_hash}.nar{ext}"),
+            box_file: format!("{nar_hash}.nar.zst"),
+            nar,
         }
     }
 
@@ -1025,6 +1111,11 @@ Deriver: {hash}-pkg-{c}.drv\n",
             names
         }
 
+        /// The NAR file the box stored for `o`.
+        fn stored_nar(&self, o: &Obj) -> Vec<u8> {
+            std::fs::read(self.app.store.nar_path(&o.box_file).unwrap()).unwrap()
+        }
+
         /// Wait until no narinfo is pending, i.e. every fetch has ended.
         fn settle(&self) {
             let pull = self.app.pull.as_ref().unwrap();
@@ -1055,6 +1146,26 @@ Deriver: {hash}-pkg-{c}.drv\n",
             .find_map(|l| l.strip_prefix(key)?.strip_prefix(": "))
     }
 
+    /// The box's narinfo keeps the source's signed fields and signatures
+    /// byte for byte, so the signatures still verify.
+    fn assert_signed_fields_kept(rendered: &str, source: &str) {
+        for kept in [
+            "StorePath",
+            "NarHash",
+            "NarSize",
+            "References",
+            "Deriver",
+            "Sig",
+        ] {
+            assert_eq!(field(rendered, kept), field(source, kept), "{kept}");
+        }
+        assert!(NarInfo::parse(rendered).unwrap().verify(&trusted(&key())));
+    }
+
+    fn file_hash(file: &[u8]) -> String {
+        format!("sha256:{}", nix32_encode(&Sha256::digest(file)))
+    }
+
     #[test]
     fn miss_is_answered_at_once_then_stored_and_served() {
         let (up, base) = Upstream::start();
@@ -1070,20 +1181,10 @@ Deriver: {hash}-pkg-{c}.drv\n",
             field(&pending, "URL"),
             Some(&*format!("nar/{}", o.box_file))
         );
-        assert_eq!(field(&pending, "Compression"), Some("xz"));
+        assert_eq!(field(&pending, "Compression"), Some("zstd"));
         assert_eq!(field(&pending, "FileHash"), None);
         assert_eq!(field(&pending, "FileSize"), None);
-        for kept in [
-            "StorePath",
-            "NarHash",
-            "NarSize",
-            "References",
-            "Deriver",
-            "Sig",
-        ] {
-            assert_eq!(field(&pending, kept), field(&o.narinfo, kept), "{kept}");
-        }
-        assert!(NarInfo::parse(&pending).unwrap().verify(&trusted(&key())));
+        assert_signed_fields_kept(&pending, &o.narinfo);
         assert!(!k.app.store.has(&o.hash));
         assert!(!k.app.store.narinfo_path(&o.hash).unwrap().exists());
 
@@ -1105,30 +1206,26 @@ Deriver: {hash}-pkg-{c}.drv\n",
         up.release();
         for _ in 0..2 {
             let (code, body) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
-            assert_eq!((code, &body), (200, &o.file));
+            assert_eq!(code, 200);
+            assert_eq!(zstd::decode_all(&body[..]).unwrap(), o.nar);
         }
         assert_eq!(up.asked(&format!("GET {}.narinfo", o.hash)), 1);
         assert_eq!(up.asked(&format!("GET {}", o.key)), 1);
 
-        // On disk: the NAR as the upstream served it, and a narinfo that
-        // describes that file.
+        // On disk: the NAR as zstd, and a narinfo that describes that file.
         k.settle();
+        let file = k.stored_nar(&o);
         let stored = k.app.store.read_narinfo(&o.hash).unwrap().unwrap();
-        assert_eq!(
-            field(&stored, "FileHash"),
-            Some(&*format!(
-                "sha256:{}",
-                nix32_encode(&Sha256::digest(&o.file))
-            ))
-        );
-        assert_eq!(field(&stored, "FileSize"), Some(&*o.file.len().to_string()));
+        assert_eq!(field(&stored, "FileHash"), Some(&*file_hash(&file)));
+        assert_eq!(field(&stored, "FileSize"), Some(&*file.len().to_string()));
         assert_eq!(field(&stored, "URL"), field(&pending, "URL"));
-        assert_eq!(field(&stored, "Sig"), field(&o.narinfo, "Sig"));
+        assert_eq!(field(&stored, "Compression"), Some("zstd"));
+        assert_signed_fields_kept(&stored, &o.narinfo);
         assert_eq!(k.nar_dir(), [o.box_file.as_str()]);
 
         // A hit now: served from the store, the upstream is not asked again.
         assert_eq!(k.narinfo(&o), (200, stored));
-        assert_eq!(k.get(&format!("nar/{}", o.box_file)), (200, o.file.clone()));
+        assert_eq!(k.get(&format!("nar/{}", o.box_file)), (200, file));
         assert_eq!(up.log().len(), 2);
     }
 
@@ -1143,19 +1240,73 @@ Deriver: {hash}-pkg-{c}.drv\n",
         assert!(k.app.store.has(&o.hash));
     }
 
+    const ENCODINGS: [&str; 4] = ["none", "xz", "zstd", "bzip2"];
+
     #[test]
-    fn every_supported_encoding_verifies() {
+    fn every_encoding_is_stored_as_zstd() {
         let (up, base) = Upstream::start();
         let k = Kasha::pulling(&[&base], config());
-        for (c, compression) in [('a', "none"), ('b', "xz"), ('c', "zstd"), ('d', "bzip2")] {
+        for (c, compression) in ['a', 'b', 'c', 'd'].into_iter().zip(ENCODINGS) {
             let o = object(&key(), c, compression);
             up.add(&o);
-            assert_eq!(k.narinfo(&o).0, 200, "{compression}");
+            let (code, pending) = k.narinfo(&o);
+            assert_eq!(code, 200, "{compression}");
+            assert_eq!(
+                field(&pending, "URL"),
+                Some(&*format!("nar/{}", o.box_file))
+            );
+            assert!(o.box_file.ends_with(".nar.zst"));
+            assert_eq!(field(&pending, "Compression"), Some("zstd"));
+            assert_eq!(field(&pending, "FileHash"), None);
+            assert_eq!(field(&pending, "FileSize"), None);
+            assert_signed_fields_kept(&pending, &o.narinfo);
             k.settle();
+
+            // Valid zstd of the NAR the narinfo describes; a zstd source's
+            // file as received, at a level the box would not have chosen.
+            let file = k.stored_nar(&o);
+            let nar = zstd::decode_all(&file[..]).unwrap();
+            let info = NarInfo::parse(&o.narinfo).unwrap();
+            assert_eq!(nar.len() as u64, info.nar_size, "{compression}");
+            assert_eq!(
+                Some(<[u8; 32]>::from(Sha256::digest(&nar))),
+                info.nar_sha256()
+            );
+            assert_eq!(file == o.file, compression == "zstd", "{compression}");
+
             let stored = k.app.store.read_narinfo(&o.hash).unwrap().unwrap();
-            assert_eq!(field(&stored, "Compression"), Some(compression));
-            assert_eq!(k.get(&format!("nar/{}", o.box_file)), (200, o.file.clone()));
+            assert_eq!(field(&stored, "URL"), field(&pending, "URL"));
+            assert_eq!(field(&stored, "Compression"), Some("zstd"));
+            assert_eq!(field(&stored, "FileHash"), Some(&*file_hash(&file)));
+            assert_eq!(field(&stored, "FileSize"), Some(&*file.len().to_string()));
+            assert_signed_fields_kept(&stored, &o.narinfo);
+            assert_eq!(k.get(&format!("nar/{}", o.box_file)), (200, file));
         }
+    }
+
+    #[test]
+    fn source_without_file_hash_or_size_is_stored() {
+        let (up, base) = Upstream::start();
+        let mut o = object(&key(), 'a', "xz");
+        // As a server that compresses NARs on the fly serves them. The
+        // signature does not cover these lines.
+        o.narinfo = o
+            .narinfo
+            .lines()
+            .filter(|l| !l.starts_with("FileHash: ") && !l.starts_with("FileSize: "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        up.add(&o);
+        let k = Kasha::pulling(&[&base], config());
+        let (code, pending) = k.narinfo(&o);
+        assert_eq!(code, 200);
+        assert_signed_fields_kept(&pending, &o.narinfo);
+        k.settle();
+        let file = k.stored_nar(&o);
+        let stored = k.app.store.read_narinfo(&o.hash).unwrap().unwrap();
+        assert_eq!(field(&stored, "FileHash"), Some(&*file_hash(&file)));
+        assert_eq!(field(&stored, "FileSize"), Some(&*file.len().to_string()));
+        assert_eq!(zstd::decode_all(&file[..]).unwrap(), o.nar);
     }
 
     #[test]
@@ -1225,20 +1376,25 @@ Deriver: {hash}-pkg-{c}.drv\n",
     #[test]
     fn nar_hash_mismatch_is_not_stored() {
         let (up, base) = Upstream::start();
-        let o = object(&key(), 'a', "xz");
-        up.add(&o);
-        // Same length, other bytes.
-        let other = "NAR OF a ".repeat(500).into_bytes();
-        up.put(&o.key, &encode("xz", &other));
-        let k = Kasha::pulling(&[&base], config());
-        assert_fetch_fails(&up, &k, &o);
+        for (c, compression) in ['a', 'b', 'c', 'd'].into_iter().zip(ENCODINGS) {
+            let o = object(&key(), c, compression);
+            up.add(&o);
+            // Same length, other bytes.
+            let other = format!("NAR OF {c} ").repeat(500).into_bytes();
+            up.put(&o.key, &encode(compression, &other));
+            let k = Kasha::pulling(&[&base], config());
+            assert_fetch_fails(&up, &k, &o);
+        }
     }
 
     #[test]
     fn nar_size_mismatch_is_not_stored() {
         let (up, base) = Upstream::start();
-        for (c, off_by) in [('a', -1i64), ('b', 1)] {
-            let mut o = object(&key(), c, "zstd");
+        let cases = ['a', 'b', 'c', 'd', 'f', 'g', 'h', 'i']
+            .into_iter()
+            .zip(ENCODINGS.into_iter().flat_map(|e| [(e, -1i64), (e, 1)]));
+        for (c, (compression, off_by)) in cases {
+            let mut o = object(&key(), c, compression);
             let size: i64 = field(&o.narinfo, "NarSize").unwrap().parse().unwrap();
             // Signed over the wrong size, so only the size check can object.
             let body = o
@@ -1253,6 +1409,21 @@ Deriver: {hash}-pkg-{c}.drv\n",
                 );
             o.narinfo = sign(&key(), &body);
             up.add(&o);
+            let k = Kasha::pulling(&[&base], config());
+            assert_fetch_fails(&up, &k, &o);
+        }
+    }
+
+    #[test]
+    fn endless_body_is_cut() {
+        let (up, base) = Upstream::start();
+        let empty_frame = zstd::encode_all(&b""[..], 1).unwrap();
+        // Empty zstd frames decode to nothing, so only the cap on the body
+        // stops them; a plain body overruns `NarSize` first.
+        for (c, compression, chunk) in [('a', "zstd", empty_frame), ('b', "none", vec![0; 4096])] {
+            let o = object(&key(), c, compression);
+            up.add(&o);
+            up.endless.lock().unwrap().insert(o.key.clone(), chunk);
             let k = Kasha::pulling(&[&base], config());
             assert_fetch_fails(&up, &k, &o);
         }
@@ -1591,11 +1762,13 @@ Deriver: {hash}-pkg-{c}.drv\n",
         let (up, base) = Upstream::start();
         let k = Kasha::pulling(&[&base], config());
 
-        // A pushed uncompressed NAR is named by its hash too. It is reused,
-        // not downloaded again and not replaced.
-        let good = object(&key(), 'a', "none");
+        // Another path with the same NAR stored it already, at another zstd
+        // level than this fetch would use. It is reused, not downloaded
+        // again and not replaced.
+        let good = object(&key(), 'a', "xz");
         up.add(&good);
-        k.app.store.put_nar(&good.box_file, &good.file[..]).unwrap();
+        let earlier = zstd::encode_all(&good.nar[..], 19).unwrap();
+        k.app.store.put_nar(&good.box_file, &earlier[..]).unwrap();
         // The same file before and after, not a copy moved over it.
         let inode = || {
             use std::os::unix::fs::MetadataExt;
@@ -1609,6 +1782,8 @@ Deriver: {hash}-pkg-{c}.drv\n",
         assert!(k.app.store.has(&good.hash));
         assert_eq!(up.asked(&format!("GET {}", good.key)), 0);
         assert_eq!(pushed, inode());
+        let stored = k.app.store.read_narinfo(&good.hash).unwrap().unwrap();
+        assert_eq!(field(&stored, "FileHash"), Some(&*file_hash(&earlier)));
 
         // A file of that name with other contents is not this NAR: it stays,
         // and the path is not stored.
@@ -1626,6 +1801,29 @@ Deriver: {hash}-pkg-{c}.drv\n",
             b"something else"
         );
         assert_eq!(up.asked(&format!("GET {}", bad.key)), 0);
+    }
+
+    #[test]
+    fn an_older_encoding_of_the_same_nar_stays() {
+        let (up, base) = Upstream::start();
+        let o = object(&key(), 'a', "xz");
+        up.add(&o);
+        let k = Kasha::pulling(&[&base], config());
+        // Stored before the box stored NARs as zstd, and a pushed
+        // uncompressed NAR, which Nix names by the NAR hash too.
+        let stem = o.box_file.trim_end_matches(".zst");
+        let (old, pushed) = (format!("{stem}.xz"), stem.to_string());
+        k.app.store.put_nar(&old, &o.file[..]).unwrap();
+        k.app.store.put_nar(&pushed, &o.nar[..]).unwrap();
+        assert_eq!(k.narinfo(&o).0, 200);
+        k.settle();
+        assert_eq!(up.asked(&format!("GET {}", o.key)), 1);
+        let mut names = vec![old.clone(), pushed.clone(), o.box_file.clone()];
+        names.sort();
+        assert_eq!(k.nar_dir(), names);
+        // A client that holds the old narinfo still gets its file.
+        assert_eq!(k.get(&format!("nar/{old}")), (200, o.file.clone()));
+        assert_eq!(k.get(&format!("nar/{pushed}")), (200, o.nar.clone()));
     }
 
     #[test]
@@ -1686,6 +1884,7 @@ CA: fixed:r:sha256:{nar_hash}\n",
             key: "nar/upstream-source.nar.zst".into(),
             file: encode("zstd", &nar),
             box_file: format!("{nar_hash}.nar.zst"),
+            nar: nar.clone(),
         };
         up.add(&o);
         let k = Kasha::pulling(&[&base], config());

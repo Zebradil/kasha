@@ -45,6 +45,12 @@ an upstream cache instead of as a miss, and the box keeps the verified path for 
 It works beside the eager bidirectional replica and never replaces it.
 _Avoid_: proxy, lazy mirror, on-demand mirroring
 
+**Unlisted path**:
+A path on the box that no retained generation manifest lists: pulled through, pushed without a
+manifest, or dropped by generation retention. With a size cap set, the box keeps unlisted paths
+within it and evicts the least recently used first.
+_Avoid_: orphan (a NAR no narinfo names), cached path
+
 **Generation manifest (v3)**:
 An object (`roots/<flake>/<gen>.json`) published by a writer (CI or a local push)
 alongside a generation's NARs. Lists the generation's full build-closure store

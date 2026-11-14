@@ -10,6 +10,11 @@ rest stands.
 **Partly superseded by [ADR-0012](0012-pulled-through-nars-as-zstd.md)** — a pulled-through
 NAR is not stored as received either, but as zstd.
 
+**Partly superseded by [ADR-0013](0013-unlisted-paths-lru-size-cap.md)** — with
+`KASHA_UNLISTED_MAX_BYTES` set, paths no retained manifest lists are evicted by use under that
+cap instead of swept after the 24h grace window, and each deletion is decided under the box's
+index lock.
+
 Supersedes ADR-0002 (nix-native box store), ADR-0003 (roots-only manifests), and
 ADR-0006 (bash reusable tools). ADR-0001 (eager bidirectional replica) and ADR-0004
 (box holds no signing key) survive unchanged. Design record:

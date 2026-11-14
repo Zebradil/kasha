@@ -7,6 +7,9 @@ presence decides retention only for paths a manifest lists, box-retained ⊆ rem
 holds for generations only, and a pulled-through narinfo is not stored as received. The
 rest stands.
 
+**Partly superseded by [ADR-0012](0012-pulled-through-nars-as-zstd.md)** — a pulled-through
+NAR is not stored as received either, but as zstd.
+
 Supersedes ADR-0002 (nix-native box store), ADR-0003 (roots-only manifests), and
 ADR-0006 (bash reusable tools). ADR-0001 (eager bidirectional replica) and ADR-0004
 (box holds no signing key) survive unchanged. Design record:

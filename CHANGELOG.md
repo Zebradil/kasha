@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.1](https://github.com/Zebradil/kasha/compare/v0.9.0...v0.9.1) (2026-11-14)
+
+
+### Fixes
+
+* **deps:** update rust crate rusty-s3 to 0.11.0 ([#98](https://github.com/Zebradil/kasha/issues/98)) ([38a7a19](https://github.com/Zebradil/kasha/commit/38a7a19a63d97664341450c30138dbe6e8aef2d9))
+
+
+### Documentation
+
+* **agents:** add deferred triage label ([8350f00](https://github.com/Zebradil/kasha/commit/8350f002a698811a3e469e76f6ef673f75c4594c))
+* **agents:** refresh skill config, rename CONTEXT.md to GLOSSARY.md ([56e98db](https://github.com/Zebradil/kasha/commit/56e98db27c51be1df3e2f268abed5f54bcf1445c))
+* count docs site visitors with Umami ([#103](https://github.com/Zebradil/kasha/issues/103)) ([7a4548e](https://github.com/Zebradil/kasha/commit/7a4548e400ad9f31c5cbf7ab2d140620b485fdd8))
+* install docs-kit from npm ([#106](https://github.com/Zebradil/kasha/issues/106)) ([0ba6c93](https://github.com/Zebradil/kasha/commit/0ba6c93ff3b98c25c6383671a884f0b9ff19514e))
+
 ## [0.9.0](https://github.com/Zebradil/kasha/compare/v0.8.0...v0.9.0) (2026-10-09)
 
 

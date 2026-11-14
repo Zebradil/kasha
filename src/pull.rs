@@ -1149,15 +1149,24 @@ Deriver: {hash}-pkg-{c}.drv\n",
     /// The box's narinfo keeps the source's signed fields and signatures
     /// byte for byte, so the signatures still verify.
     fn assert_signed_fields_kept(rendered: &str, source: &str) {
+        // Every line of each, in order: `Sig` can repeat.
+        let lines = |narinfo: &str, key: &str| -> Vec<String> {
+            narinfo
+                .lines()
+                .filter(|l| l.split_once(": ").is_some_and(|(k, _)| k == key))
+                .map(str::to_string)
+                .collect()
+        };
         for kept in [
             "StorePath",
             "NarHash",
             "NarSize",
             "References",
             "Deriver",
+            "CA",
             "Sig",
         ] {
-            assert_eq!(field(rendered, kept), field(source, kept), "{kept}");
+            assert_eq!(lines(rendered, kept), lines(source, kept), "{kept}");
         }
         assert!(NarInfo::parse(rendered).unwrap().verify(&trusted(&key())));
     }
@@ -1246,11 +1255,17 @@ Deriver: {hash}-pkg-{c}.drv\n",
     fn every_encoding_is_stored_as_zstd() {
         let (up, base) = Upstream::start();
         let k = Kasha::pulling(&[&base], config());
+        // A second signature, by a key the box does not trust, must survive
+        // too: a consumer may trust that one.
+        let other = SigningKey::from_bytes(&[12u8; 32]);
         for (c, compression) in ['a', 'b', 'c', 'd'].into_iter().zip(ENCODINGS) {
-            let o = object(&key(), c, compression);
+            let mut o = object(&key(), c, compression);
+            let sig = other.sign(NarInfo::parse(&o.narinfo).unwrap().fingerprint().as_bytes());
+            o.narinfo += &format!("Sig: test-2:{}\n", BASE64.encode(&sig.to_bytes()));
             up.add(&o);
             let (code, pending) = k.narinfo(&o);
             assert_eq!(code, 200, "{compression}");
+            assert_eq!(pending.matches("\nSig: ").count(), 2);
             assert_eq!(
                 field(&pending, "URL"),
                 Some(&*format!("nar/{}", o.box_file))

@@ -172,21 +172,28 @@ impl Mirror<'_> {
                 );
                 continue;
             }
-            let Some(mut nar) = source.get_stream(&info.url)? else {
-                tracing::debug!(hash, url = info.url, "narinfo without nar on source");
-                continue;
-            };
             let file = info
                 .url
                 .strip_prefix("nar/")
                 .with_context(|| format!("unexpected nar URL {}", info.url))?;
-            let n = self.store.put_nar(file, &mut nar)?;
-            let bytes = if i == 0 {
-                &self.counters.bytes_down_remote
-            } else {
-                &self.counters.bytes_down_upstream
-            };
-            bytes.fetch_add(n, Ordering::Relaxed);
+            // A stored NAR of that name is kept, never replaced: `URL` is
+            // unsigned, so a source could name any NAR in the store, and a
+            // pulled-through one has the name an upstream may use for its own
+            // zstd file. A wrong pairing only fails this path's NarHash check
+            // on the consumer.
+            if !self.store.nar_path(file)?.is_file() {
+                let Some(mut nar) = source.get_stream(&info.url)? else {
+                    tracing::debug!(hash, url = info.url, "narinfo without nar on source");
+                    continue;
+                };
+                let n = self.store.put_nar_new(file, &mut nar)?;
+                let bytes = if i == 0 {
+                    &self.counters.bytes_down_remote
+                } else {
+                    &self.counters.bytes_down_upstream
+                };
+                bytes.fetch_add(n, Ordering::Relaxed);
+            }
             self.store.put_narinfo(&info, &raw)?; // nar first: index never dangles
             return Ok(true);
         }
@@ -443,6 +450,54 @@ References: \n"
         let report = m.down().unwrap();
         assert_eq!(report.fetched_paths, 1);
         assert_eq!(report.gaps["znix"], 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn down_keeps_a_stored_nar_of_that_name() {
+        let (sk, pk) = keypair();
+        let keys = [pk];
+        let dir = tmp();
+        let store = Store::open(&dir).unwrap();
+        let remote = FakeRemote::default();
+
+        // A NAR the box already stores, under the name the source's narinfo
+        // gives for another file: a pulled-through NAR whose name an
+        // upstream also uses, or a URL aimed at it on purpose.
+        let (ha, ia, na) = object(&sk, 'a', "pkg-a");
+        let file = format!("{ha}.nar.xz");
+        store.put_nar(&file, &b"STORED"[..]).unwrap();
+        remote.insert(&format!("{ha}.narinfo"), ia.as_bytes());
+        remote.insert(&format!("nar/{file}"), &na);
+        remote.insert(
+            "roots/znix/main-1-x.json",
+            &manifest("main-1-x", "main", &[&format!("/nix/store/{ha}-pkg-a")]),
+        );
+
+        let m = mirror(&store, &remote, &keys);
+        let gets = remote.gets();
+        let report = m.down().unwrap();
+        assert_eq!(report.fetched_paths, 1);
+        assert!(store.has(&ha));
+        assert_eq!(
+            std::fs::read(store.nar_path(&file).unwrap()).unwrap(),
+            b"STORED"
+        );
+        // The manifest and the narinfo, not the NAR.
+        assert_eq!(remote.gets() - gets, 2);
+        assert_eq!(m.counters.bytes_down_remote.load(Ordering::Relaxed), 0);
+
+        // With nothing stored under the name, the source's NAR is stored.
+        let (hb, ib, nb) = object(&sk, 'b', "pkg-b");
+        remote.insert(&format!("{hb}.narinfo"), ib.as_bytes());
+        remote.insert(&format!("nar/{hb}.nar.xz"), &nb);
+        remote.insert(
+            "roots/znix/main-2-x.json",
+            &manifest("main-2-x", "main", &[&format!("/nix/store/{hb}-pkg-b")]),
+        );
+        m.down().unwrap();
+        let stored = std::fs::read(store.nar_path(&format!("{hb}.nar.xz")).unwrap()).unwrap();
+        assert_eq!(stored, nb);
         let _ = std::fs::remove_dir_all(dir);
     }
 

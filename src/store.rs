@@ -228,6 +228,24 @@ impl Store {
         Ok(n)
     }
 
+    /// Stream a nar object to disk unless one of that name is stored, which
+    /// is kept. Returns the bytes stored, 0 when the existing file was kept.
+    pub fn put_nar_new(&self, file: &str, mut body: impl Read) -> Result<u64> {
+        let path = self.nar_path(file)?;
+        let mut n = 0;
+        let tmp = write_temp(&path, |f| {
+            n = std::io::copy(&mut body, f)?;
+            Ok(())
+        })?;
+        let linked = fs::hard_link(&tmp, &path);
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(n),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(0),
+            Err(e) => Err(e).with_context(|| format!("storing {}", path.display())),
+        }
+    }
+
     pub fn manifest_path(&self, flake: &str, gen_id: &str) -> Result<PathBuf> {
         Ok(self
             .root
@@ -679,6 +697,22 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
                 .count()
         };
         assert_eq!(temps(&root) + temps(&root.join("nar")), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn put_nar_new_keeps_an_existing_file() {
+        let root = tmp();
+        let s = Store::open(&root).unwrap();
+        assert_eq!(s.put_nar_new("f.nar.zst", &b"first"[..]).unwrap(), 5);
+        assert_eq!(s.put_nar_new("f.nar.zst", &b"second"[..]).unwrap(), 0);
+        assert_eq!(
+            fs::read(s.nar_path("f.nar.zst").unwrap()).unwrap(),
+            b"first"
+        );
+        // No temp file is left either way.
+        let names: Vec<_> = fs::read_dir(root.join("nar")).unwrap().collect();
+        assert_eq!(names.len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 

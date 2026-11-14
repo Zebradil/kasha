@@ -365,10 +365,15 @@ impl Store {
     /// Remove a narinfo (file + index entry). Sweep helper.
     pub fn remove_narinfo(&self, store_hash: &str) -> Result<()> {
         let p = self.narinfo_path(store_hash)?;
-        if p.exists() {
-            fs::remove_file(p)?;
+        // File and entry go under one lock, so no reader of the index sees
+        // a narinfo that is gone from disk.
+        let mut idx = self.index.write().unwrap();
+        match fs::remove_file(p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        self.index.write().unwrap().remove(store_hash);
+        idx.remove(store_hash);
         Ok(())
     }
 

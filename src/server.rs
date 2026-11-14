@@ -3,7 +3,9 @@
 //! GET/HEAD (unauthenticated, LAN): /nix-cache-info, /<hash>.narinfo,
 //! /nar/<file>, /roots/<flake>/<gen>.json, /status, /metrics (Prometheus
 //! text format). 404 on miss — the consumer's substituter list falls back to
-//! remote/upstream (no pull-through).
+//! remote/upstream. With pull-through on (ADR-0011, `crate::pull`) a GET
+//! narinfo miss is first tried on the box's sources, and a GET for a NAR
+//! being fetched waits for it; HEAD always answers from the store alone.
 //!
 //! PUT (bearer or basic auth): same object paths. Every ingested narinfo must
 //! carry a signature from a trusted key or a content address that reproduces
@@ -20,6 +22,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::manifest::Manifest;
 use crate::narinfo::{NarInfo, PubKey};
+use crate::pull::Pull;
 use crate::store::Store;
 
 /// Worker-reported sync state surfaced at /status.
@@ -104,7 +107,7 @@ fn bump(c: &AtomicU64) {
 }
 
 pub struct App {
-    pub store: Store,
+    pub store: Arc<Store>,
     pub keys: Vec<PubKey>,
     /// Write token; None disables all writes.
     pub token: Option<String>,
@@ -112,6 +115,10 @@ pub struct App {
     pub counters: Counters,
     /// Last NAR age scan; walking `nar/` on every scrape is too much.
     pub ages: Mutex<Option<(Instant, Arc<AgeStats>)>>,
+    /// `Priority` advertised in /nix-cache-info.
+    pub priority: u32,
+    /// Pull-through mode; None when off.
+    pub pull: Option<Arc<Pull>>,
 }
 
 impl App {
@@ -313,13 +320,11 @@ pub fn handle(app: &App, mut req: Request) {
 fn respond_get(app: &App, req: Request, path: &str) {
     match path {
         "nix-cache-info" => {
-            respond(
-                req,
-                text(
-                    200,
-                    "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 10\n",
-                ),
+            let info = format!(
+                "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: {}\n",
+                app.priority
             );
+            respond(req, text(200, &info));
             return;
         }
         "status" => {
@@ -349,13 +354,30 @@ fn respond_get(app: &App, req: Request, path: &str) {
         }
         _ => {}
     }
-    let file = object_path(&app.store, path).filter(|p| p.is_file());
+    let stored = || object_path(&app.store, path).filter(|p| p.is_file());
+    let mut file = stored();
+    let mut pending = None;
+    if file.is_none()
+        && *req.method() == Method::Get
+        && let Some(pull) = &app.pull
+    {
+        if let Some(hash) = path.strip_suffix(".narinfo") {
+            pending = pull.narinfo(hash);
+        } else if let Some(name) = path.strip_prefix("nar/") {
+            pull.join(name);
+            file = stored();
+        }
+    }
     if path.ends_with(".narinfo") {
-        bump(if file.is_some() {
+        bump(if file.is_some() || pending.is_some() {
             &app.counters.narinfo_hits
         } else {
             &app.counters.narinfo_misses
         });
+    }
+    if let Some(narinfo) = pending {
+        respond(req, text(200, &narinfo));
+        return;
     }
     // Only NAR bodies count as served bytes; narinfos are noise next to them.
     let nar = *req.method() == Method::Get && path.starts_with("nar/");
@@ -517,7 +539,7 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         o,
         "kasha_nar_bytes_total",
         "counter",
-        "NAR bytes moved, by direction (down/up: mirror, served: to clients, ingest: pushed in).",
+        "NAR bytes moved, by direction (down/up: mirror, pull: pull-through, served: to clients, ingest: pushed in).",
     )?;
     for (labels, v) in [
         ("direction=\"down\",source=\"remote\"", &c.bytes_down_remote),
@@ -530,6 +552,67 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         ("direction=\"ingest\"", &c.bytes_ingested),
     ] {
         writeln!(o, "kasha_nar_bytes_total{{{labels}}} {}", n(v))?;
+    }
+
+    if let Some(pull) = &app.pull {
+        let p = &pull.stats;
+        for (labels, v) in [
+            ("direction=\"pull\",source=\"remote\"", &p.bytes_remote),
+            ("direction=\"pull\",source=\"upstream\"", &p.bytes_upstream),
+        ] {
+            writeln!(o, "kasha_nar_bytes_total{{{labels}}} {}", n(v))?;
+        }
+        head(
+            o,
+            "kasha_pull_through_lookups_total",
+            "counter",
+            "Narinfo misses handled by pull-through, by result (found: a source had it, miss: no source had it, negative: a remembered miss, failed: a source could not answer, capped: over the pending cap).",
+        )?;
+        for (result, v) in [
+            ("found", &p.found),
+            ("miss", &p.missed),
+            ("negative", &p.negative),
+            ("failed", &p.failed),
+            ("capped", &p.capped),
+        ] {
+            writeln!(
+                o,
+                "kasha_pull_through_lookups_total{{result=\"{result}\"}} {}",
+                n(v)
+            )?;
+        }
+        head(
+            o,
+            "kasha_pull_through_fetches_total",
+            "counter",
+            "Background fetches ended, by result (abandoned: the path was stored by another route first).",
+        )?;
+        for (result, v) in [
+            ("stored", &p.stored),
+            ("failed", &p.fetch_failed),
+            ("abandoned", &p.abandoned),
+        ] {
+            writeln!(
+                o,
+                "kasha_pull_through_fetches_total{{result=\"{result}\"}} {}",
+                n(v)
+            )?;
+        }
+        let (pending, queued) = pull.gauges();
+        head(
+            o,
+            "kasha_pull_through_pending",
+            "gauge",
+            "Narinfos answered whose NAR is not stored yet.",
+        )?;
+        writeln!(o, "kasha_pull_through_pending {pending}")?;
+        head(
+            o,
+            "kasha_pull_through_queued",
+            "gauge",
+            "Pending narinfos whose download has not started.",
+        )?;
+        writeln!(o, "kasha_pull_through_queued {queued}")?;
     }
 
     let ages = app.age_stats();
@@ -718,12 +801,14 @@ References: \n";
         let sk = SigningKey::from_bytes(&[3u8; 32]);
         let pk = format!("test-1:{}", BASE64.encode(sk.verifying_key().as_bytes()));
         let app = Arc::new(App {
-            store: Store::open(&dir).unwrap(),
+            store: Arc::new(Store::open(&dir).unwrap()),
             keys: vec![PubKey::parse(&pk).unwrap()],
             token: Some("s3cret".into()),
             status: Mutex::new(Status::default()),
             counters: Counters::default(),
             ages: Default::default(),
+            priority: 10,
+            pull: None,
         });
         let base = spawn(app.clone());
         let agent = ureq::Agent::new_with_defaults();

@@ -1,6 +1,8 @@
 # End-to-end against a real nix client: sign -> nix copy --to (netrc basic
 # auth) -> kasha emit manifest -> substitute pull gated by the trusted key.
 # The box runs only the kasha binary — no nix, no signing key (ADR-0004).
+# Then pull-through (ADR-0011): a second box with nothing stored and the first
+# as its only upstream serves the same path to a fresh client.
 { pkgs, kasha }:
 let
   port = 5000;
@@ -30,6 +32,18 @@ pkgs.testers.runNixOSTest {
       networking.firewall.allowedTCPPorts = [ port ];
     };
 
+    # Pull-through box: no remote cache, no write token, one upstream.
+    edge = _: {
+      systemd.services.kasha = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          ExecStart = "${kasha}/bin/kasha serve --data /var/lib/kasha --listen 0.0.0.0:${toString port} --trusted-keys ${pk} --pull-through --upstreams http://box:${toString port}";
+          StateDirectory = "kasha";
+        };
+      };
+      networking.firewall.allowedTCPPorts = [ port ];
+    };
+
     pusher = _: {
       nix.settings = {
         experimental-features = [ "nix-command" ];
@@ -48,6 +62,15 @@ pkgs.testers.runNixOSTest {
         experimental-features = [ "nix-command" ];
         substituters = pkgs.lib.mkForce [ ];
       };
+    };
+
+    # Stands in for a short-lived consumer that only knows the edge box.
+    job = _: {
+      nix.settings = {
+        experimental-features = [ "nix-command" ];
+        substituters = pkgs.lib.mkForce [ ];
+      };
+      environment.systemPackages = [ pkgs.curl ];
     };
   };
 
@@ -97,5 +120,41 @@ pkgs.testers.runNixOSTest {
     )
     puller.succeed(f"nix-store --check-validity {path}")
     puller.succeed(f"grep -q hello-kasha-v2 {path}")
+
+    # Pull-through: the edge box holds nothing and fetches from `box` on a
+    # narinfo miss.
+    edge.wait_for_unit("kasha.service")
+    edge.wait_for_open_port(${toString port})
+    job.wait_for_unit("multi-user.target")
+    edge_base = "http://edge:${toString port}"
+    store_hash = path.split("/")[-1][:32]
+    narinfo = f"/var/lib/kasha/{store_hash}.narinfo"
+    copy_from_edge = (
+        f"nix copy --from {edge_base} "
+        "--option trusted-public-keys '${pk}' "
+        f"--option require-sigs true {path}"
+    )
+
+    # HEAD reports the store and never starts a fetch.
+    code = job.succeed(
+        f"curl -s -o /dev/null -w '%{{http_code}}' -I {edge_base}/{store_hash}.narinfo"
+    ).strip()
+    assert code == "404", f"expected 404, got {code}"
+    edge.fail(f"test -e {narinfo}")
+
+    job.succeed(copy_from_edge)
+    job.succeed(f"nix-store --check-validity {path}")
+    job.succeed(f"grep -q hello-kasha-v2 {path}")
+
+    # The edge box kept the path: a narinfo describing a NAR it stores.
+    edge.wait_until_succeeds(f"test -f {narinfo}")
+    edge.succeed(f"grep -q '^FileHash: ' {narinfo}")
+    edge.succeed(f"test -f /var/lib/kasha/$(sed -n 's/^URL: //p' {narinfo})")
+
+    # With the upstream gone the edge box still serves it.
+    box.succeed("systemctl stop kasha.service")
+    job.succeed(f"nix-store --delete {path}")
+    job.succeed(copy_from_edge)
+    job.succeed(f"grep -q hello-kasha-v2 {path}")
   '';
 }

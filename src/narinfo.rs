@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 pub const STORE_DIR: &str = "/nix/store";
 
 /// A nix binary-cache public key: `name:base64(32-byte ed25519 pubkey)`.
+#[derive(Clone)]
 pub struct PubKey {
     pub name: String,
     key: VerifyingKey,
@@ -41,6 +42,8 @@ impl PubKey {
 pub struct NarInfo {
     pub store_path: String,
     pub url: String,
+    /// `Compression` as nix reads it: a narinfo without the field is bzip2.
+    pub compression: String,
     pub nar_hash: String,
     pub nar_size: u64,
     /// Reference basenames as listed (nix emits them sorted).
@@ -55,6 +58,7 @@ impl NarInfo {
     pub fn parse(text: &str) -> Result<Self> {
         let mut store_path = None;
         let mut url = None;
+        let mut compression = None;
         let mut nar_hash = None;
         let mut nar_size = None;
         let mut references = Vec::new();
@@ -70,6 +74,7 @@ impl NarInfo {
             match k {
                 "StorePath" => store_path = Some(v.to_string()),
                 "URL" => url = Some(v.to_string()),
+                "Compression" => compression = Some(v.to_string()),
                 "NarHash" => nar_hash = Some(v.to_string()),
                 "NarSize" => nar_size = Some(v.parse::<u64>().context("NarSize")?),
                 "References" => references = v.split_whitespace().map(str::to_string).collect(),
@@ -85,6 +90,7 @@ impl NarInfo {
         Ok(Self {
             store_path,
             url: url.context("narinfo missing URL")?,
+            compression: compression.unwrap_or_else(|| "bzip2".into()),
             nar_hash: nar_hash.context("narinfo missing NarHash")?,
             nar_size: nar_size.context("narinfo missing NarSize")?,
             references,
@@ -96,6 +102,18 @@ impl NarInfo {
     /// The 32-char base32 hash part of the store path basename.
     pub fn store_hash(&self) -> &str {
         store_hash_of(&self.store_path)
+    }
+
+    /// `NarHash` as raw sha256 bytes; None for any other algorithm or
+    /// encoding than `sha256:` in nix32 or hex.
+    pub fn nar_sha256(&self) -> Option<[u8; 32]> {
+        let h = self.nar_hash.strip_prefix("sha256:")?;
+        let bytes = match h.len() {
+            52 => nix32_decode(h, 32)?,
+            64 => HEXLOWER.decode(h.as_bytes()).ok()?,
+            _ => return None,
+        };
+        bytes.try_into().ok()
     }
 
     /// The string nix signs: `1;<path>;<narHash>;<narSize>;<full-path refs, comma-joined>`.
@@ -219,7 +237,7 @@ fn make_store_path(ty: &str, hash: &[u8], name: &str) -> String {
     for (i, b) in digest.iter().enumerate() {
         folded[i % 20] ^= b;
     }
-    let hash_part: String = nix32().encode(&folded).chars().rev().collect();
+    let hash_part = nix32_encode(&folded);
     format!("{STORE_DIR}/{hash_part}-{name}")
 }
 
@@ -230,6 +248,10 @@ fn nix32() -> Encoding {
     spec.symbols.push_str("0123456789abcdfghijklmnpqrsvwxyz");
     spec.bit_order = BitOrder::LeastSignificantFirst;
     spec.encoding().expect("valid nix32 spec")
+}
+
+pub fn nix32_encode(bytes: &[u8]) -> String {
+    nix32().encode(bytes).chars().rev().collect()
 }
 
 fn nix32_decode(s: &str, len: usize) -> Option<Vec<u8>> {
@@ -276,6 +298,24 @@ Sig: cache.nixos.org-1:KEsNsSW3fMW5Izf4ZtjDbvSy/IO7al066kF52gutYtw/wJ8PopYTyu2aA
         assert_eq!(n.nar_size, 113096);
         assert_eq!(n.references.len(), 1);
         assert_eq!(n.sigs.len(), 1);
+    }
+
+    #[test]
+    fn nar_sha256_reads_nix32_and_hex() {
+        let n = NarInfo::parse(REAL).unwrap();
+        let raw = n.nar_sha256().unwrap();
+        assert_eq!(
+            format!("sha256:{}", nix32_encode(&raw)),
+            n.nar_hash,
+            "nix32 round trip"
+        );
+        let hex = REAL.replace(&n.nar_hash, &format!("sha256:{}", HEXLOWER.encode(&raw)));
+        assert_eq!(NarInfo::parse(&hex).unwrap().nar_sha256(), Some(raw));
+        let sri = REAL.replace(&n.nar_hash, "sha512:abc");
+        assert_eq!(NarInfo::parse(&sri).unwrap().nar_sha256(), None);
+        assert_eq!(n.compression, "zstd");
+        let bare = REAL.replace("Compression: zstd\n", "");
+        assert_eq!(NarInfo::parse(&bare).unwrap().compression, "bzip2");
     }
 
     #[test]

@@ -2,6 +2,7 @@ mod gc;
 mod manifest;
 mod mirror;
 mod narinfo;
+mod pull;
 mod remote;
 mod retention;
 mod server;
@@ -45,7 +46,8 @@ enum Cmd {
         /// Remote cache as s3://bucket?endpoint=…&region=… (enables mirroring).
         #[arg(long, env = "KASHA_REMOTE")]
         remote: Option<String>,
-        /// Upstream substituters tried after the remote cache, comma separated.
+        /// Upstream caches tried after the remote cache, by mirror-down and
+        /// by pull-through, comma separated.
         #[arg(
             long,
             env = "KASHA_UPSTREAMS",
@@ -67,6 +69,55 @@ enum Cmd {
             value_parser = clap::value_parser!(u64).range(1..)
         )]
         max_inflight: u64,
+        /// `Priority` advertised in /nix-cache-info; nix asks substituters
+        /// with a lower number first.
+        #[arg(long, env = "KASHA_PRIORITY", default_value = "10")]
+        priority: u32,
+        /// Pull-through: on a narinfo miss, fetch the path from the remote
+        /// cache or an upstream cache, verify and store it (ADR-0011).
+        #[arg(
+            long,
+            env = "KASHA_PULL_THROUGH",
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
+        pull_through: bool,
+        /// Seconds a path no source has is answered 404 without asking again.
+        #[arg(long, env = "KASHA_PULL_THROUGH_NEGATIVE_TTL", default_value = "60")]
+        pull_through_negative_ttl_secs: u64,
+        /// Concurrent pull-through NAR downloads.
+        #[arg(
+            long,
+            env = "KASHA_PULL_THROUGH_WORKERS",
+            default_value = "8",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        pull_through_workers: u64,
+        /// Cap on paths answered but not yet stored, queued downloads
+        /// included; further narinfo misses get 404.
+        #[arg(
+            long,
+            env = "KASHA_PULL_THROUGH_MAX_PENDING",
+            default_value = "4096",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        pull_through_max_pending: u64,
+        /// Seconds a source gets to accept a connection and to answer a
+        /// narinfo lookup.
+        #[arg(
+            long,
+            env = "KASHA_PULL_THROUGH_LOOKUP_TIMEOUT",
+            default_value = "10",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        pull_through_lookup_timeout_secs: u64,
+        /// Seconds a NAR download may receive nothing before it is dropped.
+        #[arg(
+            long,
+            env = "KASHA_PULL_THROUGH_STALL_TIMEOUT",
+            default_value = "60",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        pull_through_stall_timeout_secs: u64,
     },
     /// Emit a v3 generation manifest (closure store paths on stdin).
     Emit {
@@ -205,26 +256,68 @@ fn main() -> Result<()> {
             sync_interval_secs,
             gc_interval_secs,
             max_inflight,
+            priority,
+            pull_through,
+            pull_through_negative_ttl_secs,
+            pull_through_workers,
+            pull_through_max_pending,
+            pull_through_lookup_timeout_secs,
+            pull_through_stall_timeout_secs,
         } => {
+            let store = Arc::new(store::Store::open(&data)?);
+            let stale = store.clean_temps()?;
+            if stale > 0 {
+                tracing::info!(stale, "removed temp files of an interrupted run");
+            }
+            let keys = parse_keys(&trusted_keys)?;
+            let s3 = remote.as_deref().map(S3Remote::from_url).transpose()?;
+            let ups: Vec<String> = upstreams
+                .split(',')
+                .map(|u| u.trim().trim_end_matches('/').to_string())
+                .filter(|u| !u.is_empty())
+                .collect();
+
+            let pull = if pull_through {
+                let remote = s3
+                    .as_ref()
+                    .map(|s3| Box::new(s3.presigner()) as pull::UrlFn);
+                let cfg = pull::Config {
+                    negative_ttl: Duration::from_secs(pull_through_negative_ttl_secs),
+                    workers: pull_through_workers as usize,
+                    max_pending: pull_through_max_pending as usize,
+                    // Half the request slots: NAR requests waiting on a fetch
+                    // must leave room for narinfo lookups.
+                    max_waiters: (max_inflight as usize / 2).max(1),
+                    lookup_timeout: Duration::from_secs(pull_through_lookup_timeout_secs),
+                    stall_timeout: Duration::from_secs(pull_through_stall_timeout_secs),
+                };
+                let sources = pull::sources(remote, &ups);
+                tracing::info!(sources = sources.len(), "pull-through enabled");
+                Some(pull::Pull::start(
+                    store.clone(),
+                    keys.clone(),
+                    sources,
+                    cfg,
+                )?)
+            } else {
+                None
+            };
+
             let app = Arc::new(server::App {
-                store: store::Store::open(&data)?,
-                keys: parse_keys(&trusted_keys)?,
+                store,
+                keys,
                 token,
                 status: Mutex::new(server::Status::default()),
                 counters: Default::default(),
                 ages: Default::default(),
+                priority,
+                pull,
             });
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
             }
 
-            if let Some(url) = remote {
-                let s3 = S3Remote::from_url(&url)?;
-                let ups: Vec<String> = upstreams
-                    .split(',')
-                    .map(|u| u.trim().trim_end_matches('/').to_string())
-                    .filter(|u| !u.is_empty())
-                    .collect();
+            if let Some(s3) = s3 {
                 let sync_app = app.clone();
                 std::thread::spawn(move || {
                     sync_loop(sync_app, s3, ups, sync_interval_secs, gc_interval_secs)

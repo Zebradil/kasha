@@ -23,7 +23,7 @@ install:
     code: cargo install --locked --git https://github.com/Zebradil/kasha
 features:
   - title: LAN-speed substitution
-    body: Serves signed Nix store paths from a flat binary-cache store on the local network; the box answers 404 on a miss and never proxies.
+    body: Serves signed Nix store paths from a flat binary-cache store on the local network. A miss is a 404, or with pull-through on, a path the box fetches, verifies and keeps.
   - title: Authenticated pushes
     body: Accepts plain `nix copy` pushes over HTTP with netrc or bearer auth; writes are refused when no token is set.
   - title: Eager bidirectional mirror

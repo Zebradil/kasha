@@ -146,6 +146,15 @@ impl S3Remote {
     }
 }
 
+impl S3Remote {
+    /// Presigned GET URLs for object keys, for a caller that brings its own
+    /// HTTP agent and timeouts.
+    pub fn presigner(&self) -> impl Fn(&str) -> String + Send + Sync + 'static {
+        let (bucket, creds) = (self.bucket.clone(), self.creds.clone());
+        move |key| bucket.get_object(Some(&creds), key).sign(SIGN_TTL).into()
+    }
+}
+
 fn status_of(e: &ureq::Error) -> Option<u16> {
     match e {
         ureq::Error::StatusCode(c) => Some(*c),

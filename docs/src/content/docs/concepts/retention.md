@@ -35,7 +35,8 @@ Both sweeps are mark-and-sweep:
 2. Mark every store path in their closures. The mark set is the union of the listed paths; the sweep never walks
    narinfo references.
 3. Mark the NARs the marked narinfos point to.
-4. Delete every unmarked narinfo and NAR, except objects younger than the grace window (24 hours).
+4. Delete every unmarked narinfo and NAR, except objects younger than the grace window (24 hours). The box sweep also
+   keeps the NAR of every narinfo it keeps, however old the NAR is.
 
 The remote sweep also deletes the manifests retention did not keep, and anything under `roots/` that is not a valid v3
 manifest. The box sweep deletes no manifests: mirror-down drops a local manifest once it disappears from the remote, so
@@ -58,6 +59,20 @@ Two more guards protect data only the box holds:
   has uploaded it to the remote cache.
 - A box with no manifests at all skips its sweep. An empty mark set would delete the whole store, and an unsynced store
   (a fresh volume, a restored backup) is not a retention decision.
+
+## Pulled-through paths
+
+A path that [pull-through](../eager-replica/#pull-through-on-a-miss) stored is in no manifest, and generation retention
+is all the box has today. Until eviction by use under a size cap exists, a pull-through box behaves like this:
+
+- **With manifests** (a remote cache, or generations pushed to it): the box sweep deletes a pulled-through path once it
+  is past the 24-hour grace window, however often it is read. The next request pulls it through again.
+- **Without manifests**: the sweep is skipped, and without `KASHA_REMOTE` the GC timer does not run at all. Nothing is
+  ever deleted, the store grows until the volume is full, and anyone who can reach the box can fill it. Size the volume
+  for it, restrict who can reach the box, or clear the volume on a schedule.
+
+A manifest that lists a pulled-through path retains it like any other path: the sweep looks at what manifests list,
+not at how a path arrived.
 
 ## Why it is this simple
 

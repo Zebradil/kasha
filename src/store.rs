@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::manifest::Manifest;
@@ -18,6 +19,18 @@ pub struct Store {
     pub root: PathBuf,
     /// storehash -> nar URL (relative key like `nar/<filehash>.nar.xz`).
     index: RwLock<HashMap<String, String>>,
+}
+
+/// What `Store::publish_pulled` did with a pulled-through path.
+#[derive(Debug, PartialEq)]
+pub enum Published {
+    Stored,
+    /// The store already holds a narinfo for the path; nothing was written.
+    Lost,
+    /// A NAR of that name appeared while the caller downloaded its own.
+    NarExists,
+    /// The caller relied on a stored NAR that is gone.
+    NarMissing,
 }
 
 /// Reject path components that could escape the store root.
@@ -50,8 +63,12 @@ impl Store {
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            let Some(hash) = name.strip_suffix(".narinfo") else {
+            // Dot-files are `write_atomic` temps, not narinfos.
+            let Some(hash) = name
+                .to_str()
+                .filter(|n| !n.starts_with('.'))
+                .and_then(|n| n.strip_suffix(".narinfo"))
+            else {
                 continue;
             };
             let text = fs::read_to_string(entry.path())?;
@@ -59,11 +76,34 @@ impl Store {
                 Ok(n) => {
                     idx.insert(hash.to_string(), n.url);
                 }
-                Err(e) => tracing::warn!(file = name, error = %e, "skipping unparseable narinfo"),
+                Err(e) => tracing::warn!(hash, error = %e, "skipping unparseable narinfo"),
             }
         }
         *self.index.write().unwrap() = idx;
         Ok(())
+    }
+
+    /// Remove temp files a killed process left behind; returns how many.
+    /// Only old ones go: a young one can belong to a writer that is still
+    /// at it, in this process or in another `serve` on the volume, such as
+    /// the one a rolling restart replaces. Nothing here is worth failing
+    /// for, so errors are skipped.
+    pub fn clean_temps(&self) -> usize {
+        let mut dirs = vec![self.root.clone(), self.root.join("nar")];
+        if let Ok(flakes) = fs::read_dir(self.root.join("roots")) {
+            dirs.extend(flakes.flatten().map(|f| f.path()));
+        }
+        let stale = |e: &fs::DirEntry| {
+            e.file_name().to_string_lossy().starts_with(TEMP_PREFIX)
+                && e.metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().is_ok_and(|age| age >= TEMP_MAX_AGE))
+        };
+        dirs.iter()
+            .filter_map(|dir| fs::read_dir(dir).ok())
+            .flat_map(|entries| entries.flatten())
+            .filter(|e| stale(e) && fs::remove_file(e.path()).is_ok())
+            .count()
     }
 
     pub fn len(&self) -> usize {
@@ -89,12 +129,92 @@ impl Store {
     /// `NarInfo::verify` first.
     pub fn put_narinfo(&self, info: &NarInfo, raw: &[u8]) -> Result<()> {
         let path = self.narinfo_path(info.store_hash())?;
-        write_atomic(&path, |f| f.write_all(raw))?;
-        self.index
-            .write()
-            .unwrap()
-            .insert(info.store_hash().to_string(), info.url.clone());
+        let tmp = write_temp(&path, |f| f.write_all(raw))?;
+        // Rename and index update under one lock, so index and disk agree
+        // when this races `publish_pulled` for the same path. The write and
+        // its fsync stay outside: the lock also serves every index reader.
+        let mut idx = self.index.write().unwrap();
+        move_into_place(&tmp, &path)?;
+        idx.insert(info.store_hash().to_string(), info.url.clone());
         Ok(())
+    }
+
+    /// A new temp file beside the NAR `file`, for a download that
+    /// `publish_pulled` then moves into place.
+    pub fn nar_temp(&self, file: &str) -> Result<(PathBuf, fs::File)> {
+        create_temp(&self.nar_path(file)?)
+    }
+
+    /// Store a pulled-through path without replacing anything: the NAR
+    /// (`nar_tmp`, or one already stored under the narinfo's `URL`) and then
+    /// its narinfo. An existing narinfo wins, and so does an existing NAR of
+    /// that name; either way the store is left untouched and the caller keeps
+    /// its temp file. Caller verified both objects.
+    pub fn publish_pulled(
+        &self,
+        info: &NarInfo,
+        raw: &[u8],
+        nar_tmp: Option<&Path>,
+    ) -> Result<Published> {
+        let narinfo = self.narinfo_path(info.store_hash())?;
+        let file = info.url.strip_prefix("nar/").context("nar URL")?;
+        let nar = self.nar_path(file)?;
+        let narinfo_tmp = write_temp(&narinfo, |f| f.write_all(raw))?;
+        let published = self.publish_locked(info, &narinfo, &narinfo_tmp, &nar, nar_tmp);
+        if !matches!(published, Ok(Published::Stored)) {
+            let _ = fs::remove_file(&narinfo_tmp);
+        }
+        published
+    }
+
+    /// The part of `publish_pulled` that needs the index lock: checks,
+    /// renames and the index update, no file contents.
+    fn publish_locked(
+        &self,
+        info: &NarInfo,
+        narinfo: &Path,
+        narinfo_tmp: &Path,
+        nar: &Path,
+        nar_tmp: Option<&Path>,
+    ) -> Result<Published> {
+        // Every narinfo writer takes this lock, so the check below holds
+        // until this narinfo is in place.
+        let mut idx = self.index.write().unwrap();
+        if narinfo.exists() {
+            return Ok(Published::Lost);
+        }
+        match nar_tmp {
+            // A hard link is the portable way to create without replacing.
+            Some(tmp) => match fs::hard_link(tmp, nar) {
+                Ok(()) => {
+                    let _ = fs::remove_file(tmp);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Ok(Published::NarExists);
+                }
+                Err(e) => return Err(e).with_context(|| format!("storing {}", nar.display())),
+            },
+            // The sweep judges a NAR by its age. A reused one may be past
+            // grace already, so it is made as young as the narinfo that
+            // names it from now on.
+            None => match touch(nar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Published::NarMissing);
+                }
+                Err(e) => return Err(e).with_context(|| format!("touching {}", nar.display())),
+            },
+        }
+        if let Err(e) = fs::rename(narinfo_tmp, narinfo) {
+            // No narinfo names the NAR this call just created, and none can
+            // appear while the lock is held.
+            if nar_tmp.is_some() {
+                let _ = fs::remove_file(nar);
+            }
+            return Err(e).with_context(|| format!("writing {}", narinfo.display()));
+        }
+        idx.insert(info.store_hash().to_string(), info.url.clone());
+        Ok(Published::Stored)
     }
 
     /// Stream a nar object to disk byte-identical.
@@ -275,8 +395,11 @@ impl Store {
         for e in fs::read_dir(&self.root)? {
             let e = e?;
             let name = e.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if let Some(hash) = name.strip_suffix(".narinfo") {
+            if let Some(hash) = name
+                .to_str()
+                .filter(|n| !n.starts_with('.'))
+                .and_then(|n| n.strip_suffix(".narinfo"))
+            {
                 out.push((hash.to_string(), e.metadata()?.modified()?));
             }
         }
@@ -308,6 +431,13 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// mtime of one nar object as it is now; None when it is gone.
+    pub fn nar_modified(&self, file: &str) -> Option<SystemTime> {
+        fs::metadata(self.nar_path(file).ok()?)
+            .and_then(|m| m.modified())
+            .ok()
     }
 
     pub fn remove_nar(&self, file: &str) -> Result<()> {
@@ -344,30 +474,75 @@ impl Store {
     }
 }
 
-/// Write via temp file + rename so readers never see partial objects.
-fn write_atomic(
+const TEMP_PREFIX: &str = ".tmp-";
+
+/// A temp file untouched for this long has no writer: one that is still
+/// being written keeps a fresh mtime.
+const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Read-only: the owner may set times on a file it cannot open for writing.
+fn touch(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.set_modified(SystemTime::now())
+}
+
+/// A temp path beside `path`, different on every call within one process.
+fn temp_beside(path: &Path) -> Result<PathBuf> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = path.parent().context("no parent dir")?;
+    Ok(dir.join(format!(
+        "{TEMP_PREFIX}{}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        path.file_name().context("no file name")?.to_string_lossy()
+    )))
+}
+
+/// Create a temp file beside `path` that no other writer has. Pid and
+/// counter do not make the name unique across processes: in containers
+/// every `serve` is pid 1 and counts from zero, and two can share a volume.
+/// So the file is created exclusively, moving on to the next name when one
+/// is taken.
+fn create_temp(path: &Path) -> Result<(PathBuf, fs::File)> {
+    loop {
+        let tmp = temp_beside(path)?;
+        match fs::File::options().write(true).create_new(true).open(&tmp) {
+            Ok(f) => return Ok((tmp, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).with_context(|| format!("creating {}", tmp.display())),
+        }
+    }
+}
+
+/// Write and sync a temp file beside `path`, for `move_into_place`.
+fn write_temp(
     path: &Path,
     fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
-) -> Result<()> {
-    let dir = path.parent().context("no parent dir")?;
-    let tmp = dir.join(format!(
-        ".tmp-{}-{}",
-        std::process::id(),
-        path.file_name().unwrap().to_string_lossy()
-    ));
-    let mut f = fs::File::create(&tmp)?;
+) -> Result<PathBuf> {
+    let (tmp, mut f) = create_temp(path)?;
     let res = fill(&mut f).and_then(|()| f.sync_all());
     drop(f);
     match res {
-        Ok(()) => {
-            fs::rename(&tmp, path)?;
-            Ok(())
-        }
+        Ok(()) => Ok(tmp),
         Err(e) => {
             let _ = fs::remove_file(&tmp);
             Err(e).with_context(|| format!("writing {}", path.display()))
         }
     }
+}
+
+fn move_into_place(tmp: &Path, path: &Path) -> Result<()> {
+    fs::rename(tmp, path).map_err(|e| {
+        let _ = fs::remove_file(tmp);
+        anyhow::Error::new(e).context(format!("writing {}", path.display()))
+    })
+}
+
+/// Write via temp file + rename so readers never see partial objects.
+fn write_atomic(
+    path: &Path,
+    fill: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<()> {
+    move_into_place(&write_temp(path, fill)?, path)
 }
 
 #[cfg(test)]
@@ -423,6 +598,136 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         s.remove_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf")
             .unwrap();
         assert!(!s.has("v4f0jj9sz97ckskvacf40llz4nfr19jf"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publish_pulled_never_replaces() {
+        let root = tmp();
+        let s = Store::open(&root).unwrap();
+        let n = NarInfo::parse(REAL).unwrap();
+        let file = n.url.strip_prefix("nar/").unwrap();
+        let download = |body: &[u8]| {
+            let (tmp, mut f) = s.nar_temp(file).unwrap();
+            f.write_all(body).unwrap();
+            tmp
+        };
+
+        // A NAR the caller counted on is gone: nothing is written.
+        assert_eq!(
+            s.publish_pulled(&n, REAL.as_bytes(), None).unwrap(),
+            Published::NarMissing
+        );
+        assert!(!s.has(n.store_hash()));
+
+        let tmp = download(b"first");
+        assert_eq!(
+            s.publish_pulled(&n, REAL.as_bytes(), Some(&tmp)).unwrap(),
+            Published::Stored
+        );
+        assert!(s.has(n.store_hash()) && !tmp.exists());
+        assert_eq!(fs::read(s.nar_path(file).unwrap()).unwrap(), b"first");
+
+        // The path is stored now: a second publish changes nothing and
+        // leaves the caller its download.
+        let tmp = download(b"second");
+        assert_eq!(
+            s.publish_pulled(&n, b"other narinfo", Some(&tmp)).unwrap(),
+            Published::Lost
+        );
+        assert!(tmp.exists());
+        assert_eq!(s.read_narinfo(n.store_hash()).unwrap().unwrap(), REAL);
+
+        // Without the narinfo, the stored NAR of that name still wins.
+        s.remove_narinfo(n.store_hash()).unwrap();
+        assert_eq!(
+            s.publish_pulled(&n, REAL.as_bytes(), Some(&tmp)).unwrap(),
+            Published::NarExists
+        );
+        assert!(tmp.exists() && !s.has(n.store_hash()));
+        assert_eq!(fs::read(s.nar_path(file).unwrap()).unwrap(), b"first");
+
+        // Reusing it makes it young again, so no sweep takes it from under
+        // the new narinfo.
+        let long_ago = SystemTime::now() - Duration::from_secs(7 * 86400);
+        fs::File::options()
+            .write(true)
+            .open(s.nar_path(file).unwrap())
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        assert_eq!(
+            s.publish_pulled(&n, REAL.as_bytes(), None).unwrap(),
+            Published::Stored
+        );
+        assert!(s.nar_modified(file).unwrap() > long_ago + Duration::from_secs(86400));
+
+        // Only the download the caller still owns is left in a temp file.
+        fs::remove_file(tmp).unwrap();
+        let temps = |dir: &Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .filter(|e| {
+                    let name = e.as_ref().unwrap().file_name();
+                    name.to_string_lossy().starts_with(TEMP_PREFIX)
+                })
+                .count()
+        };
+        assert_eq!(temps(&root) + temps(&root.join("nar")), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn temp_files_are_unique_ignored_and_cleaned() {
+        let root = tmp();
+        let s = Store::open(&root).unwrap();
+        let ((a, _), (b, _)) = (s.nar_temp("f.nar").unwrap(), s.nar_temp("f.nar").unwrap());
+        assert_ne!(a, b, "two writers of one object share a temp file");
+
+        // Names another process on the volume already took, as a second
+        // pid-1 `serve` counting from zero would: they are skipped, never
+        // opened.
+        let object = s.nar_path("g.nar").unwrap();
+        let next = temp_beside(&object).unwrap();
+        let name = next.file_name().unwrap().to_string_lossy().into_owned();
+        let seq: u64 = name.split('-').nth(2).unwrap().parse().unwrap();
+        let taken: Vec<PathBuf> = (seq + 1..seq + 200)
+            .map(|n| next.with_file_name(name.replacen(&format!("-{seq}-"), &format!("-{n}-"), 1)))
+            .collect();
+        for t in &taken {
+            fs::write(t, "taken").unwrap();
+        }
+        let (mine, _) = create_temp(&object).unwrap();
+        assert!(!taken.contains(&mine));
+        for t in &taken {
+            assert_eq!(fs::read(t).unwrap(), b"taken");
+            fs::remove_file(t).unwrap();
+        }
+        fs::remove_file(mine).unwrap();
+
+        // What a killed process leaves behind.
+        let n = NarInfo::parse(REAL).unwrap();
+        let narinfo = temp_beside(&s.narinfo_path(n.store_hash()).unwrap()).unwrap();
+        fs::create_dir_all(root.join("roots/znix")).unwrap();
+        let manifest = temp_beside(&s.manifest_path("znix", "main-1-x").unwrap()).unwrap();
+        let long_ago = SystemTime::now() - 2 * TEMP_MAX_AGE;
+        for tmp in [&a, &narinfo, &manifest] {
+            fs::write(tmp, REAL).unwrap();
+            let f = fs::File::options().write(true).open(tmp).unwrap();
+            f.set_modified(long_ago).unwrap();
+        }
+        // A young temp file may have a live writer.
+        fs::write(&b, REAL).unwrap();
+        s.put_nar("kept.nar", &b"x"[..]).unwrap();
+
+        // A temp narinfo is neither indexed nor offered to the sweep.
+        let s = Store::open(&root).unwrap();
+        assert_eq!(s.len(), 0);
+        assert!(s.narinfo_files().unwrap().is_empty());
+
+        assert_eq!(s.clean_temps(), 3);
+        assert!(!a.exists() && !narinfo.exists() && !manifest.exists());
+        assert!(b.exists() && s.nar_path("kept.nar").unwrap().exists());
         fs::remove_dir_all(root).unwrap();
     }
 

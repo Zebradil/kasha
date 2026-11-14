@@ -22,13 +22,27 @@ Options:
       --remote <REMOTE>
           Remote cache as s3://bucket?endpoint=…&region=… (enables mirroring) [env: KASHA_REMOTE=]
       --upstreams <UPSTREAMS>
-          Upstream substituters tried after the remote cache, comma separated [env: KASHA_UPSTREAMS=] [default: https://cache.nixos.org]
+          Upstream caches tried after the remote cache, by mirror-down and by pull-through, comma separated [env: KASHA_UPSTREAMS=] [default: https://cache.nixos.org]
       --sync-interval-secs <SYNC_INTERVAL_SECS>
           Seconds to sleep between sync cycles (mirror-down, then mirror-up) [env: KASHA_SYNC_INTERVAL=] [default: 300]
       --gc-interval-secs <GC_INTERVAL_SECS>
           Minimum seconds between box GC sweeps, checked after each sync cycle [env: KASHA_GC_INTERVAL=] [default: 86400]
       --max-inflight <MAX_INFLIGHT>
           Cap on concurrent requests. Each in-flight response holds a slot for its whole transfer, so this bounds slow readers, not CPU [env: KASHA_MAX_INFLIGHT=] [default: 256]
+      --priority <PRIORITY>
+          `Priority` advertised in /nix-cache-info; nix asks substituters with a lower number first [env: KASHA_PRIORITY=] [default: 10]
+      --pull-through
+          Pull-through: on a narinfo miss, fetch the path from the remote cache or an upstream cache, verify and store it (ADR-0011) [env: KASHA_PULL_THROUGH=]
+      --pull-through-negative-ttl-secs <PULL_THROUGH_NEGATIVE_TTL_SECS>
+          Seconds a path no source has is answered 404 without asking again [env: KASHA_PULL_THROUGH_NEGATIVE_TTL=] [default: 60]
+      --pull-through-workers <PULL_THROUGH_WORKERS>
+          Concurrent pull-through NAR downloads [env: KASHA_PULL_THROUGH_WORKERS=] [default: 8]
+      --pull-through-max-pending <PULL_THROUGH_MAX_PENDING>
+          Cap on paths answered but not yet stored, queued downloads included; further narinfo misses get 404 [env: KASHA_PULL_THROUGH_MAX_PENDING=] [default: 4096]
+      --pull-through-lookup-timeout-secs <PULL_THROUGH_LOOKUP_TIMEOUT_SECS>
+          Seconds a source gets to accept a connection and to answer a narinfo lookup [env: KASHA_PULL_THROUGH_LOOKUP_TIMEOUT=] [default: 10]
+      --pull-through-stall-timeout-secs <PULL_THROUGH_STALL_TIMEOUT_SECS>
+          Seconds a NAR download may receive nothing before it is dropped [env: KASHA_PULL_THROUGH_STALL_TIMEOUT=] [default: 60]
   -h, --help
           Print help
 ```

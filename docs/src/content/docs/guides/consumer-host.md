@@ -82,6 +82,7 @@ assertion), not by switching a real host.
 sudo nixos-rebuild switch --flake .#workstation
 ```
 
-The box answers `404` for paths it does not hold and never fetches them on demand, so Nix moves on to the remote cache
-for those. See [Substituter selection](../../concepts/selection/) for why the fallback is a timeout rather than
+The box answers `404` for paths it does not hold, so Nix moves on to the remote cache for those. A box with
+[pull-through](../../concepts/eager-replica/#pull-through-on-a-miss) on fetches such a path from its own sources
+instead. See [Substituter selection](../../concepts/selection/) for why the fallback is a timeout rather than
 discovery.

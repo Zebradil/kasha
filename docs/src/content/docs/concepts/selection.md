@@ -11,11 +11,17 @@ otherwise. kasha makes that choice with plain Nix settings, no extra client soft
 The consumer module sets a host's substituters to exactly `[box, remote cache]` and lowers `connect-timeout` to 2
 seconds by default:
 
-- **On the LAN** the box answers first, at LAN speed. For a path it lacks it answers `404`, and Nix asks the remote cache.
+- **On the LAN** the box answers first, at LAN speed. For a path it lacks it answers `404`, and Nix asks the remote
+  cache. A box with [pull-through](../eager-replica/#pull-through-on-a-miss) on fetches the path itself instead.
 - **Off the LAN** the connection to the box fails within `connect-timeout`, and Nix falls back to the remote cache.
 
 Nothing changes between the two situations: no reconfiguration, no service to restart. The cost is a small timeout tax
 off-network.
+
+Nix sorts substituters by the `Priority` each one advertises in `nix-cache-info`, lower first, and uses the order of the
+list only among equal values. A box advertises `10` unless `KASHA_PRIORITY` says otherwise. Give boxes different values
+when several share one list and their order matters; a host can also override the value with `?priority=` on the
+substituter URL.
 
 The module is imported per host, not flake-wide. A box endpoint only makes sense for machines on the box's network, so
 other hosts in the same flake are untouched.

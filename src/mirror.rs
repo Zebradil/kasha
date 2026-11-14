@@ -560,12 +560,14 @@ References: \n"
             .put_narinfo(&NarInfo::parse(&ia).unwrap(), ia.as_bytes())
             .unwrap();
         let app = std::sync::Arc::new(crate::server::App {
-            store: upstore,
+            store: upstore.into(),
             keys: vec![],
             token: None,
             status: std::sync::Mutex::new(crate::server::Status::default()),
             counters: Default::default(),
             ages: Default::default(),
+            priority: 10,
+            pull: None,
         });
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());

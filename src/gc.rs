@@ -414,6 +414,33 @@ References: \n"
         .into_bytes()
     }
 
+    /// An empty store root of its own.
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kasha-gc-{name}-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn age(path: &std::path::Path, t: SystemTime) {
+        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
+    }
+
+    /// Store a path, NAR first, both files last modified at `t`.
+    fn put_path(store: &Store, info: &str, nar: &[u8], t: SystemTime) {
+        let parsed = NarInfo::parse(info).unwrap();
+        let file = parsed.url.strip_prefix("nar/").unwrap();
+        store.put_nar(file, nar).unwrap();
+        store.put_narinfo(&parsed, info.as_bytes()).unwrap();
+        age(&store.nar_path(file).unwrap(), t);
+        age(&store.narinfo_path(parsed.store_hash()).unwrap(), t);
+    }
+
     fn ts(now: SystemTime, days_ago: u64) -> String {
         humantime::format_rfc3339_seconds(now - Duration::from_secs(days_ago * 86400)).to_string()
     }
@@ -733,6 +760,57 @@ References: \n"
         assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
         assert!(store.nar_path(nar).unwrap().exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Narinfos on disk whose NAR is not.
+    fn dangling(store: &Store) -> Vec<String> {
+        store
+            .narinfo_files()
+            .unwrap()
+            .into_iter()
+            .map(|(hash, _)| hash)
+            .filter(|hash| {
+                let text = store.read_narinfo(hash).unwrap().unwrap();
+                let url = NarInfo::parse(&text).unwrap().url;
+                !store
+                    .nar_path(url.strip_prefix("nar/").unwrap())
+                    .unwrap()
+                    .exists()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn box_sweep_spares_a_nar_a_push_names_while_it_runs() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("push")).unwrap();
+        let (ha, ia, na) = object('a', "pkg-a");
+        put_path(&store, &ia, &na, now);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{ha}-pkg-a")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+
+        // A NAR no narinfo names, past grace. A push whose NAR the box has
+        // already skips the upload and sends only the narinfo.
+        let (_, ib, nb) = object('b', "pkg-b");
+        let info = NarInfo::parse(&ib).unwrap();
+        let nar = info.url.strip_prefix("nar/").unwrap();
+        store.put_nar(nar, &nb[..]).unwrap();
+        age(&store.nar_path(nar).unwrap(), now - 2 * GRACE);
+
+        let r = sweep(&store, now, GRACE, || {
+            store.put_narinfo(&info, ib.as_bytes()).unwrap();
+        })
+        .unwrap();
+        assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
+        assert!(dangling(&store).is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
     }
 
     #[test]

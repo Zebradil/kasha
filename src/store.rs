@@ -129,11 +129,27 @@ impl Store {
     /// `NarInfo::verify` first.
     pub fn put_narinfo(&self, info: &NarInfo, raw: &[u8]) -> Result<()> {
         let path = self.narinfo_path(info.store_hash())?;
+        let nar = info.url.strip_prefix("nar/").map(|f| self.nar_path(f));
+        let nar = nar.transpose()?;
         let tmp = write_temp(&path, |f| f.write_all(raw))?;
         // Rename and index update under one lock, so index and disk agree
         // when this races `publish_pulled` for the same path. The write and
         // its fsync stay outside: the lock also serves every index reader.
         let mut idx = self.index.write().unwrap();
+        // The NAR this names may be past grace already: a push skips the
+        // upload of a NAR the box has. As in `publish_locked`, it is made as
+        // young as its new narinfo, so no sweep that listed the store before
+        // takes it. Absent is fine: nothing names it yet.
+        if let Some(nar) = nar {
+            match touch(&nar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e).context("touching the narinfo's NAR");
+                }
+            }
+        }
         move_into_place(&tmp, &path)?;
         idx.insert(info.store_hash().to_string(), info.url.clone());
         Ok(())

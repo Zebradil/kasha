@@ -2,9 +2,9 @@
 # auth) -> kasha emit manifest -> substitute pull gated by the trusted key.
 # The box runs only the kasha binary — no nix, no signing key (ADR-0004).
 # Then pull-through (ADR-0011): a second box with nothing stored and the first
-# as its only upstream serves the same path to a fresh client. The first box
-# serves it as xz, Nix's default for `nix copy --to`; the second stores it as
-# zstd (ADR-0012).
+# as its only upstream serves the same path to a fresh client. The path is
+# pushed as xz, so the first box serves it as xz; the second stores it as zstd
+# (ADR-0012).
 { pkgs, kasha }:
 let
   port = 5000;
@@ -93,9 +93,11 @@ pkgs.testers.runNixOSTest {
     ).strip()
     assert code == "401", f"expected 401, got {code}"
 
-    # Sign locally (box never signs), push via plain nix copy + netrc.
+    # Sign locally (box never signs), push via plain nix copy + netrc. xz
+    # named explicitly: the pull-through check below needs an xz source,
+    # whatever Nix's default compression is.
     pusher.succeed(f"nix store sign --key-file ${sk} {path}")
-    pusher.succeed(f"nix copy --to '{base}' {path}")
+    pusher.succeed(f"nix copy --to '{base}?compression=xz' {path}")
 
     # Emit + publish the v3 manifest through the authed push API.
     pusher.succeed(

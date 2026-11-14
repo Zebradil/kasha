@@ -22,8 +22,9 @@ host.
 **Decision.** A box has an optional pull-through mode, off by default; with it off a box
 behaves exactly as before. With it on:
 
-- **Trigger.** Only `GET <hash>.narinfo` for a path the box lacks starts a fetch. `HEAD` and
-  `nar/` requests are answered from the store and from fetches already in flight.
+- **Trigger.** Only `GET <hash>.narinfo` for a path the box lacks starts a fetch. `HEAD` is
+  answered from the store alone; `GET nar/<file>` from the store or from a fetch of that
+  file already in flight.
 - **Sources.** The remote cache first, when the box has one, then the upstream caches in
   configured order: mirror-down's order, upstream list and trusted keys. The remote cache is
   a source because builds that no mirrored manifest lists exist nowhere else; the cost is
@@ -49,7 +50,10 @@ behaves exactly as before. With it on:
   path hash, for a negative TTL (60 s by default, configurable), so that a path no cache
   will ever hold, such as a job's own not yet built outputs, is not looked up on every
   source by every VM. A narinfo that fails the trust check or names another path is a miss
-  on that source. A lookup in which any source failed is not a miss and is not remembered.
+  on that source. A source whose narinfo the box cannot verify, for an unsupported
+  `Compression` or a `NarHash` that is not sha256, counts as failed, and the lookup goes on
+  to the next source. A lookup in which any source failed is not a miss and is not
+  remembered.
 - **Priority.** The `Priority` in `nix-cache-info` becomes configurable; the default stays
   `10`. Nix sorts substituters by it and falls back to list order among equals
   (`src/libstore/store-registration.cc:98`), so several caches in one substituter list are
@@ -81,6 +85,22 @@ pull-through again until that entry expires.
 
 Eager mirroring runs unchanged beside the mode. Pull-through never triggers mirror-up; a
 path it fetched goes up only when a local-origin manifest lists it.
+
+A push to a box with the mode on goes through the same trigger. `nix copy` asks the
+destination which paths it already has with a narinfo `GET` per path
+(`src/libstore/store-api.cc:1026`, `779`) and uses `HEAD` only later, when it uploads
+(`src/libstore/binary-cache-store.cc:296`, `386-391`). So the box pulls every pushed path
+that one of its sources holds, and the writer skips it; only paths no source has are
+uploaded. If such a background fetch then fails, the box lacks a path the writer believes
+it pushed, until mirror-down fills the gap for a manifest that lists it or a later push
+brings it. This is accepted for now; exempting authenticated requests is a possible later
+change, not decided here.
+
+The `HEAD` rule has a mirror image. A client that uses the box as the store it copies
+from, as `nix copy --from` does, first asks whether the path is valid
+(`src/nix/copy.cc:33`, `src/libstore/misc.cc:279-281`), which a binary cache answers with
+a `HEAD`, and so sees only stored paths. Substitution asks with a `GET`
+(`src/libstore/store-api.cc:479`, `src/libstore/build/substitution-goal.cc:76`).
 
 **What this supersedes.**
 

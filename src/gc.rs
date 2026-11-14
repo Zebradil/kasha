@@ -82,11 +82,12 @@ pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<Swee
             mark.extend(m.closure.iter().map(|p| store_hash_of(p).to_string()));
         }
     }
-    let live_nars: HashSet<String> = mark
-        .iter()
-        .filter_map(|h| store.url_of(h))
-        .filter_map(|u| u.strip_prefix("nar/").map(str::to_string))
-        .collect();
+    let nar_of = |hash: &str| {
+        store
+            .url_of(hash)
+            .and_then(|u| u.strip_prefix("nar/").map(str::to_string))
+    };
+    let mut live_nars: HashSet<String> = mark.iter().filter_map(|h| nar_of(h)).collect();
 
     let mut report = SweepReport {
         retained_manifests: keep.len(),
@@ -98,6 +99,10 @@ pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<Swee
         }
         if now.duration_since(mtime).unwrap_or(Duration::ZERO) < grace {
             report.skipped_young += 1;
+            // Its NAR can be older than the narinfo, past grace already: a
+            // pulled-through path that reuses a stored NAR. A narinfo the
+            // sweep keeps must keep its NAR.
+            live_nars.extend(nar_of(&hash));
             continue;
         }
         store.remove_narinfo(&hash)?;
@@ -588,6 +593,54 @@ References: \n"
         store.mark_mirrored("znix", "local-1-x").unwrap();
         let r = box_sweep(&store, now, Duration::ZERO).unwrap();
         assert!(r.deleted.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn box_sweep_keeps_the_nar_of_a_narinfo_it_keeps() {
+        let now = SystemTime::now();
+        let dir = std::env::temp_dir().join(format!(
+            "kasha-gc-young-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir).unwrap();
+        // A retained generation, so the sweep has a mark set.
+        let (ha, ia, na) = object('a', "pkg-a");
+        store.put_nar(&format!("{ha}.nar.xz"), &na[..]).unwrap();
+        store
+            .put_narinfo(&NarInfo::parse(&ia).unwrap(), ia.as_bytes())
+            .unwrap();
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{ha}-pkg-a")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+
+        // In no manifest: a NAR past grace under a narinfo still within it.
+        let (hb, ib, nb) = object('b', "pkg-b");
+        let nar = format!("{hb}.nar.xz");
+        store.put_nar(&nar, &nb[..]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(store.nar_path(&nar).unwrap())
+            .unwrap()
+            .set_modified(now - 2 * GRACE)
+            .unwrap();
+        store
+            .put_narinfo(&NarInfo::parse(&ib).unwrap(), ib.as_bytes())
+            .unwrap();
+
+        let r = box_sweep(&store, now, GRACE).unwrap();
+        assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
+        assert!(store.nar_path(&nar).unwrap().exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

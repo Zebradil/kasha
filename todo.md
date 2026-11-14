@@ -1,7 +1,7 @@
 # todo
 
 Open investigations not yet tracked as GitHub issues. Deferred features live in the issue
-tracker (#63–#67), each with the evidence that should trigger it. Terminology: `CONTEXT.md`.
+tracker (#63–#67), each with the evidence that should trigger it. Terminology: `GLOSSARY.md`.
 Decisions already made: `docs/adr/`.
 
 ## Dangling-narinfo warning (unresolved, cheap first step unrun)

@@ -10,12 +10,13 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::manifest::{Head, Manifest};
 use crate::narinfo::store_hash_of;
 use crate::remote::{Remote, fan_out};
 use crate::retention::{Gen, Policy, Verdict, retain, verdicts};
+use crate::server::App;
 use crate::store::Store;
 
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
@@ -51,6 +52,27 @@ fn to_gen(id: String, m: &Manifest) -> Gen {
 /// local-origin gen (box may hold the only copy), then sweeps objects.
 pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<SweepReport> {
     sweep(store, now, grace, || ())
+}
+
+/// How often `maintain` removes temp files a killed writer left behind.
+pub const CLEAN_EVERY: Duration = Duration::from_secs(3600);
+
+/// The box's housekeeping, on every box with or without a remote cache,
+/// waking every `poll`. Never returns.
+pub fn maintain(app: &App, poll: Duration) {
+    let mut cleaned = Instant::now();
+    loop {
+        std::thread::sleep(poll);
+        // What a crash shortly before the last start left behind was too
+        // young to remove then.
+        if cleaned.elapsed() >= CLEAN_EVERY {
+            let stale = app.store.clean_temps();
+            if stale > 0 {
+                tracing::info!(stale, "removed abandoned temp files");
+            }
+            cleaned = Instant::now();
+        }
+    }
 }
 
 /// `box_sweep`, with `nars_listed` called once the NARs are listed and

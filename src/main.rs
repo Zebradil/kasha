@@ -110,12 +110,13 @@ enum Cmd {
             value_parser = clap::value_parser!(u64).range(1..)
         )]
         pull_through_lookup_timeout_secs: u64,
-        /// Seconds a NAR download may receive nothing before it is dropped.
+        /// Seconds a NAR download may receive nothing before it is dropped;
+        /// under 3600, the age at which a temp file counts as abandoned.
         #[arg(
             long,
             env = "KASHA_PULL_THROUGH_STALL_TIMEOUT",
             default_value = "60",
-            value_parser = clap::value_parser!(u64).range(1..)
+            value_parser = clap::value_parser!(u64).range(1..store::TEMP_MAX_AGE.as_secs())
         )]
         pull_through_stall_timeout_secs: u64,
     },
@@ -318,6 +319,9 @@ fn main() -> Result<()> {
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
             }
+
+            let maintain_app = app.clone();
+            std::thread::spawn(move || gc::maintain(&maintain_app, gc::CLEAN_EVERY));
 
             if let Some(s3) = s3 {
                 let sync_app = app.clone();
@@ -551,13 +555,29 @@ fn sync_loop(
                 }
                 Err(e) => tracing::warn!(error = format!("{e:#}"), "box sweep failed"),
             }
-            // What a crash shortly before the last start left behind was
-            // too young to remove then.
-            let stale = app.store.clean_temps();
-            if stale > 0 {
-                tracing::info!(stale, "removed abandoned temp files");
-            }
         }
         std::thread::sleep(Duration::from_secs(sync_interval));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stall_timeout_stays_under_the_temp_age_limit() {
+        let serve = |stall: &str| {
+            Cli::try_parse_from([
+                "kasha",
+                "serve",
+                "--trusted-keys",
+                "k:x",
+                "--pull-through-stall-timeout-secs",
+                stall,
+            ])
+        };
+        let limit = store::TEMP_MAX_AGE.as_secs();
+        assert!(serve(&(limit - 1).to_string()).is_ok());
+        assert!(serve(&limit.to_string()).is_err());
     }
 }

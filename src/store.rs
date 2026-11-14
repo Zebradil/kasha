@@ -500,8 +500,9 @@ impl Store {
 const TEMP_PREFIX: &str = ".tmp-";
 
 /// A temp file untouched for this long has no writer: one that is still
-/// being written keeps a fresh mtime.
-const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+/// being written keeps a fresh mtime. A download may receive nothing for
+/// less than this (`KASHA_PULL_THROUGH_STALL_TIMEOUT`).
+pub const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Read-only: the owner may set times on a file it cannot open for writing.
 fn touch(path: &Path) -> std::io::Result<()> {

@@ -96,14 +96,48 @@ groups:
         for: 1h
       - alert: KashaSweepStale
         expr: time() - kasha_last_sweep_timestamp_seconds > 2 * 86400
+      # Pull-through: over 30 minutes more than 10 % of the lookups that asked a source, or of the background
+      # fetches, failed, and at least 10 of them.
+      - alert: KashaPullThroughFailing
+        expr: |
+          (
+            sum by (instance) (rate(kasha_pull_through_lookups_total{result="failed"}[30m]))
+              / sum by (instance) (rate(kasha_pull_through_lookups_total{result!="negative"}[30m])) > 0.1
+            and sum by (instance) (increase(kasha_pull_through_lookups_total{result="failed"}[30m])) >= 10
+          )
+          or
+          (
+            sum by (instance) (rate(kasha_pull_through_fetches_total{result="failed"}[30m]))
+              / sum by (instance) (rate(kasha_pull_through_fetches_total[30m])) > 0.1
+            and sum by (instance) (increase(kasha_pull_through_fetches_total{result="failed"}[30m])) >= 10
+          )
+        for: 15m
+      - alert: KashaPullThroughBusy
+        expr: |
+          sum by (instance) (increase(
+            {__name__=~"kasha_pull_through_lookups_total|kasha_pull_through_nar_waits_total", result=~"busy|capped"}[15m]
+          )) > 0
+      - alert: KashaPullThroughBacklog
+        expr: kasha_pull_through_queued > 0
+        for: 30m
+      - alert: KashaUnlistedOverCap
+        expr: kasha_unlisted_bytes > kasha_unlisted_max_bytes
+        for: 30m
 ```
+
+`KashaPullThroughBusy` means clients were sent away: raise `KASHA_MAX_INFLIGHT` (`busy`) or
+`KASHA_PULL_THROUGH_MAX_PENDING` (`capped`). `KashaPullThroughBacklog` means the download queue has not drained for
+30 minutes: raise `KASHA_PULL_THROUGH_WORKERS` or look for a slow source. `KashaUnlistedOverCap` means paths used in the
+last 10 minutes alone exceed the cap: raise it.
 
 The narinfo hit ratio, `rate(kasha_narinfo_requests_total{result="hit"}[1h]) / rate(kasha_narinfo_requests_total[1h])`,
 shows how much of the clients' demand the box serves itself.
 
 A Grafana dashboard over these metrics ships in the repository as
 [`deploy/grafana/kasha.json`](https://github.com/Zebradil/kasha/blob/main/deploy/grafana/kasha.json). It picks the
-Prometheus data source and the scrape `job` from dashboard variables, and its thresholds match the alerts above.
+Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables, and its
+thresholds match the alerts above. Rows for features a box does not use, such as pull-through or a cap, stay empty; the
+mirror and push row starts collapsed.
 
 ## Tell healthy from stuck
 

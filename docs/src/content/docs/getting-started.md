@@ -71,7 +71,7 @@ Tell Nix the write token through a netrc file (any login; the password is the to
 
 ```sh
 echo 'machine 127.0.0.1 login nix password demo-token' > netrc
-nix copy --store ./client --option netrc-file "$PWD/netrc" --to http://127.0.0.1:5000 "$p"
+nix copy --store ./client --option netrc-file "$PWD/netrc" --to 'http://127.0.0.1:5000?compression=zstd' "$p"
 ```
 
 The box now holds `hello`, its dependencies, and their NARs:

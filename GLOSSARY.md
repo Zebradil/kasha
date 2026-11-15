@@ -45,6 +45,12 @@ an upstream cache instead of as a miss, and the box keeps the verified path for 
 It works beside the eager bidirectional replica and never replaces it.
 _Avoid_: proxy, lazy mirror, on-demand mirroring
 
+**Re-encoding**:
+The box storing again as zstd a NAR it holds in another encoding, and replacing the narinfo that names it, once that
+narinfo is verified (`KASHA_REENCODE`, ADR-0015). Pull-through stores zstd from the start; re-encoding covers pushed,
+mirrored-down and older objects. The file it replaces stays until orphan removal.
+_Avoid_: recompression, transcoding
+
 **Unlisted path**:
 A path on the box that no retained generation manifest lists: pulled through, pushed without a
 manifest, or dropped by generation retention. With a size cap set, the box keeps unlisted paths

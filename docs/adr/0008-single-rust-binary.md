@@ -15,6 +15,10 @@ NAR is not stored as received either, but as zstd.
 cap instead of swept after the 24h grace window, and each deletion is decided under the box's
 index lock.
 
+**Partly superseded by [ADR-0015](0015-reencode-stored-nars-as-zstd.md)** — with
+`KASHA_REENCODE` on, pushed and mirrored-down objects are not kept byte-identical as received
+either: their NAR is stored again as zstd and their narinfo replaced by the box's rendering.
+
 Supersedes ADR-0002 (nix-native box store), ADR-0003 (roots-only manifests), and
 ADR-0006 (bash reusable tools). ADR-0001 (eager bidirectional replica) and ADR-0004
 (box holds no signing key) survive unchanged. Design record:

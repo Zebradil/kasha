@@ -45,6 +45,8 @@ Options:
           Seconds a source gets to accept a connection and to answer a narinfo lookup [env: KASHA_PULL_THROUGH_LOOKUP_TIMEOUT=] [default: 10]
       --pull-through-stall-timeout-secs <PULL_THROUGH_STALL_TIMEOUT_SECS>
           Seconds a NAR download may receive nothing before it is dropped; under 3600, the age at which a temp file counts as abandoned [env: KASHA_PULL_THROUGH_STALL_TIMEOUT=] [default: 60]
+      --reencode
+          Re-encode stored xz, bzip2 and uncompressed NARs as zstd in the background, and before mirror-up uploads them (ADR-0015) [env: KASHA_REENCODE=]
   -h, --help
           Print help
 ```

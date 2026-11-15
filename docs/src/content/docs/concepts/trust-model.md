@@ -10,7 +10,8 @@ kasha separates three things: who may **write** to a box, which paths the box **
 
 Every path the box serves was signed before it reached the box: by CI, by a developer's machine, or by the cache it
 was pulled through from. The box stores pushed and mirrored narinfos byte-identical as received, and keeps every
-signature line of a pulled-through one, so the original signatures reach every host that substitutes from it.
+signature line of a pulled-through or [re-encoded](../eager-replica/#re-encoding-stored-nars) one, so the original
+signatures reach every host that substitutes from it.
 
 The box does hold read/write credentials for the remote cache, to mirror both ways. It deliberately does not hold a
 private signing key. It is the most exposed, always-on component; if it is compromised, the worst outcome is a desynced
@@ -50,7 +51,7 @@ check above:
 - The NAR is stored as zstd under a name derived from `NarHash`, never under the name the source gave it, and it never
   replaces a stored object. A file of that name already stored is reused only if it decodes to this NAR.
 
-The box rewrites four fields of a pulled-through narinfo, which describe the stored zstd file: `URL`, `Compression`,
+The box rewrites four fields of a pulled-through or re-encoded narinfo, which describe the stored zstd file: `URL`, `Compression`,
 `FileHash` and `FileSize`. Signatures cover the store path, `NarHash`, `NarSize` and the references, so they stay valid,
 and the box still signs nothing. An upstream whose key is not in `KASHA_TRUSTED_KEYS` can supply content-addressed
 paths only.

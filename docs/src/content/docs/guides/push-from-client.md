@@ -34,7 +34,8 @@ nix copy --to 'http://box.lan:5000?compression=zstd' ./result
 
 `compression=zstd` overrides Nix's xz default. The box stores and serves NARs as they arrive, and mirror-up copies them
 to the remote cache unchanged, so every machine that later substitutes the path decodes what you chose here, and zstd
-decodes about ten times faster than xz.
+decodes about ten times faster than xz. A box with `KASHA_REENCODE` on re-encodes an xz push as zstd after the fact, and
+before mirror-up uploads it; zstd from the start saves it that work.
 
 `--recursive` signs the whole closure. A path signed only by keys the box does not trust is refused with
 `neither a trusted signature nor a valid content address on /nix/store/…`.

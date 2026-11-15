@@ -1,5 +1,10 @@
 # A box stores the NARs it pulls through as zstd
 
+**Partly superseded by [ADR-0015](0015-reencode-stored-nars-as-zstd.md)** — with
+`KASHA_REENCODE` on, pushed objects, objects mirrored down and objects already on disk do not
+stay as they arrived: the box re-encodes each NAR as zstd once it has a narinfo. The rest
+stands.
+
 Partly supersedes ADR-0008 (objects stored byte-identical as received) and ADR-0011 (a
 pulled-through NAR is stored as received). Issue: #63. Nix is cited at tag 2.34.9.
 

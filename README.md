@@ -50,6 +50,7 @@ Environment contract (all also available as flags, see `kasha serve --help`):
 | `KASHA_PRIORITY`                            | `Priority` advertised in `nix-cache-info`; Nix asks lower numbers first         | `10`                      |
 | `KASHA_PULL_THROUGH`                        | fetch, verify and keep a path on a narinfo miss (see below)                     | off                       |
 | `KASHA_UNLISTED_MAX_BYTES`                  | bytes kept of paths no retained manifest lists; least recently used go first    | —                         |
+| `KASHA_REENCODE`                            | re-encode stored xz, bzip2 and uncompressed NARs as zstd (see below)            | off                       |
 
 The box needs read/write (never delete) remote credentials via `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
@@ -74,6 +75,17 @@ Pulled-through paths are in no manifest. Set `KASHA_UNLISTED_MAX_BYTES` to keep 
 used evicted first; unset, a box without manifests never deletes them. See
 [Retention and GC](docs/src/content/docs/concepts/retention.md#unlisted-paths-and-the-size-cap). Design:
 [ADR-0011](docs/adr/0011-optional-pull-through.md), [ADR-0013](docs/adr/0013-unlisted-paths-lru-size-cap.md).
+
+### Re-encoding
+
+Pushed and mirrored-down NARs are stored in the encoding they arrived in. With `KASHA_REENCODE=true` the box re-encodes
+each stored `xz`, `bzip2` or uncompressed NAR as zstd once it has a narinfo: in the background on every box, at most
+1 GiB of NARs per 5-minute pass, and before mirror-up uploads a path, so the remote cache receives zstd. The narinfo is
+replaced only if it did not change meanwhile, and keeps its signatures. Paths no manifest lists are re-encoded only when
+used in the last 12 hours. The old file is left to orphan removal, which runs with `KASHA_UNLISTED_MAX_BYTES` set or
+with a remote cache and manifests; a box with neither keeps old files. See
+[How the box works](docs/src/content/docs/concepts/eager-replica.md#re-encoding-stored-nars) and
+[ADR-0015](docs/adr/0015-reencode-stored-nars-as-zstd.md).
 
 ## Wire consumer selection into one host
 
@@ -173,7 +185,7 @@ GCs them until their manifest is confirmed present in the remote cache.
 
 Structured logs on stderr (JSON when not a terminal), a `/status` JSON endpoint (object count, store size, per-flake
 last sync and gap count, pending mirror-up) and a Prometheus `/metrics` endpoint with the same state (store size aside)
-plus narinfo hit/miss, ingest and box-sweep counters. Both are unauthenticated; metric names and a scrape config are in
+plus narinfo hit/miss, ingest and box-sweep counters, and NARs on disk by encoding. Both are unauthenticated; metric names and a scrape config are in
 `docs/src/content/docs/guides/monitor-box.md`.
 
 ## Test
@@ -208,7 +220,7 @@ macOS builds are not published — CI has no darwin runner. `nix build .#kasha` 
 
 ## Out of scope (deliberate, see docs/agents/handoff-rewrite.md)
 
-- Re-compression of pushed and mirrored objects (stored byte-identical as received; only pulled-through NARs are stored
-  as zstd, [ADR-0012](docs/adr/0012-pulled-through-nars-as-zstd.md)).
+- Re-compression of objects already on the remote cache: the box holds no delete credentials, so an xz object there
+  stays xz ([ADR-0015](docs/adr/0015-reencode-stored-nars-as-zstd.md)).
 - Mirror-up filtering (push everything the remote lacks).
 - mDNS discovery and localhost selection shim.

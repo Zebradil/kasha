@@ -157,3 +157,23 @@ Before you enable it:
   see [How the box works](../../concepts/eager-replica/#pull-through-on-a-miss).
 - **Raise `KASHA_PULL_THROUGH_MAX_PENDING`** if single jobs need closures of more paths than the cap. The paths past it
   are not lost: Nix fetches them from its next substituter, and the next job asks the box again.
+
+## 7. Re-encode stored NARs as zstd
+
+A box stores pushed and mirrored-down NARs in the encoding they arrived in, often xz, Nix's default, which every
+consumer decodes several times more slowly than zstd. `KASHA_REENCODE=true` makes the box re-encode them as zstd after
+the fact; [How the box works](../../concepts/eager-replica/#re-encoding-stored-nars) describes what it does. It is off
+by default. Check first how much a box would re-encode: `kasha_nar_compression_bytes` on [`/metrics`](../monitor-box/)
+gives the bytes on disk per encoding.
+
+Before you enable it:
+
+- **Budget CPU and disk.** A pass every 5 minutes decodes up to 1 GiB of NARs on one core, an estimated 10 seconds of
+  it for xz. Mirror-up re-encodes the paths it uploads at once, without that limit. Each re-encoded NAR is on disk twice
+  until orphan removal takes the old file, up to a day later.
+- **Know who removes the old files.** With `KASHA_UNLISTED_MAX_BYTES` set, eviction removes them on any box; with a
+  remote cache and at least one manifest, the box sweep does. A box with neither keeps them, and its store grows by the
+  zstd copies. Until it is removed, an old file counts against no cap, so the store exceeds `KASHA_UNLISTED_MAX_BYTES`
+  by those bytes.
+- **Expect zstd on the remote cache.** Mirror-up uploads the zstd file of each path it pushes, so the remote cache
+  holds slightly more bytes than as xz. Objects already on the remote cache stay as they are.

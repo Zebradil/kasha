@@ -55,6 +55,8 @@ needs no authentication.
 | `kasha_nar_compression_objects{compression}` | gauge | NAR files on disk by the encoding their name says: `zstd` (`.nar.zst`), `xz` (`.nar.xz`), `bzip2` (`.nar.bz2`), `none` (`.nar`) or `other`. Old files no narinfo names any more count until they are removed |
 | `kasha_nar_compression_bytes{compression}` | gauge | bytes of those files |
 | `kasha_nar_stored_total{direction,compression}` | counter | NAR files stored, by how they arrived: `ingest` (a push, `compression` from the file name, since its narinfo may come later), `down` (mirror-down, from the narinfo) or `pull` (pull-through, the source's encoding; the box stored it as zstd) |
+| `kasha_reencode_paths_total{result}` | counter | paths the re-encoder took on: `reencoded` (stored as zstd, narinfo replaced), `failed` (the NAR failed its check or cannot be decoded; left as it is and not tried again until restart), `lost` (the narinfo changed meanwhile; tried again later) or `error` (a store error; tried again) |
+| `kasha_reencode_bytes_total{file}` | counter | bytes of re-encoded NAR files: `old` as stored before, `new` the zstd file that replaced it |
 | `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer), `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) or `busy` (a quarter of `KASHA_MAX_INFLIGHT` narinfo requests already wait on a lookup) |
 | `kasha_pull_through_nar_waits_total{result}` | counter | NAR requests for a download in flight: `waited` (held until it ended) or `busy` (turned away with `404`: a quarter of `KASHA_MAX_INFLIGHT` requests already wait) |
 | `kasha_pull_through_fetches_total{result}` | counter | background fetches ended: `stored`, `failed` or `abandoned` (a push or mirror-down stored the path first) |
@@ -72,6 +74,11 @@ answered by pull-through counts as a `hit` in `kasha_narinfo_requests_total`. A 
 high means the downloads cannot keep up: raise `KASHA_PULL_THROUGH_WORKERS`. A rising `failed` count is explained in
 the logs (`narinfo lookup failed`, `pull-through fetch failed`). A rising `busy` count in either metric means consumers
 are being sent away: raise `KASHA_MAX_INFLIGHT`.
+
+The `kasha_reencode_*` metrics exist only with `KASHA_REENCODE` on. A rising `failed` count names objects whose NAR does
+not match its narinfo, a pushed one most likely; the logs name each (`cannot re-encode, not tried again until restart`).
+The old files go only with orphan removal, so `kasha_nar_compression_bytes{compression="xz"}` falls up to a day after
+`kasha_reencode_bytes_total` rises, and not at all on a box without orphan removal.
 
 The `kasha_unlisted_*` metrics exist only with `KASHA_UNLISTED_MAX_BYTES` set. `kasha_unlisted_bytes` sits at or below
 the cap after a pass; above it, paths used in the last 10 minutes alone exceed the cap, which no pass can fix: raise the
@@ -170,6 +177,9 @@ Lines worth alerting on:
 | `mirror-up deferred` | warn | a local-origin generation could not be pushed up yet |
 | `box sweep failed` | warn | the in-process GC sweep hit an error |
 | `eviction pass failed` | warn | an eviction pass could not remove a file or read a manifest and stopped; the next pass retries |
+| `re-encode pass failed` | warn | a re-encode pass could not read a manifest; the next pass retries |
+| `cannot re-encode, not tried again until restart` | warn | a stored NAR failed its check against its narinfo, or its encoding cannot be decoded; it is served as it is |
+| `re-encoding failed` | warn | a store error while re-encoding a path; it is tried again |
 | `recording use failed` | warn | the box could not set a file's time on a read (it does not own its files); logged once, eviction then goes by store time |
 | `rejected ingest` | warn | a push was refused, e.g. an untrusted signature |
 | `unauthorized write` | warn | a write arrived without a valid token |

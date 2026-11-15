@@ -82,15 +82,35 @@ On disk the box holds the same flat binary-cache layout as the remote bucket:
 
 | Path | Content |
 | --- | --- |
-| `<hash>.narinfo` | one narinfo per store path, byte-identical as received; for a pulled-through path, the box's rendering |
-| `nar/…` | the NAR files narinfos point to, as received; for a pulled-through path, zstd |
+| `<hash>.narinfo` | one narinfo per store path, byte-identical as received; for a pulled-through or re-encoded path, the box's rendering |
+| `nar/…` | the NAR files narinfos point to, as received; for a pulled-through or re-encoded path, zstd |
 | `roots/<flake>/<gen>.json` | generation manifests |
 | `state/local-origin/`, `state/mirrored/` | markers for locally pushed generations |
 
-There is no Nix and no database on the box. At boot it rebuilds an in-memory index by scanning the narinfos. Only
-pull-through re-encodes a NAR, because zstd decodes several times faster than xz on every consumer; pushed and mirrored
-objects keep the encoding they arrived in, and objects stored earlier are served as they are. Rationale:
-[ADR-0012](https://github.com/Zebradil/kasha/blob/main/docs/adr/0012-pulled-through-nars-as-zstd.md).
+There is no Nix and no database on the box. At boot it rebuilds an in-memory index by scanning the narinfos.
+Pull-through stores every NAR as zstd, because zstd decodes several times faster than xz on every consumer. Pushed and
+mirrored objects keep the encoding they arrived in, unless `KASHA_REENCODE` is on: then the box re-encodes each stored
+`xz`, `bzip2` or uncompressed NAR as zstd once it has a narinfo, in the background and before mirror-up uploads it (see
+[the re-encoder](#re-encoding-stored-nars)). Rationale:
+[ADR-0012](https://github.com/Zebradil/kasha/blob/main/docs/adr/0012-pulled-through-nars-as-zstd.md),
+[ADR-0015](https://github.com/Zebradil/kasha/blob/main/docs/adr/0015-reencode-stored-nars-as-zstd.md).
+
+### Re-encoding stored NARs
+
+With `KASHA_REENCODE=true` the housekeeping thread, which runs on every box, takes a pass every 5 minutes over the
+narinfos whose NAR file is not named `.nar.zst`, decoding at most 1 GiB of NARs per pass. For each it decodes the NAR,
+checks it against `NarHash` and `NarSize`, stores it as zstd under `nar/<NarHash>.nar.zst` (the name pull-through
+uses), and replaces the narinfo with the box's rendering, which keeps every signature. A narinfo that changed meanwhile,
+by a push or mirror-down, is not replaced. A NAR that fails its check is left as it is and not tried again until the box
+restarts.
+
+A path a retained manifest lists is always re-encoded. A path no manifest lists is re-encoded only when it was used in
+the last 12 hours, and its new files keep its last use, so re-encoding never makes a path look recently used to
+eviction.
+
+The old file is not deleted by the re-encoder. A client holding the old narinfo keeps getting it until orphan removal
+takes it, a day or more after its last use: with `KASHA_UNLISTED_MAX_BYTES` set, the eviction pass removes it on any box;
+with a remote cache and at least one manifest, the box sweep does. A box with neither keeps the old files.
 
 ## The sync cycle
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/Zebradil/kasha/compare/v0.12.0...v0.12.1) (2026-11-15)
+
+
+### Fixes
+
+* **grafana:** readable age buckets, box GC under the remote row, steadier ratios ([f4ca740](https://github.com/Zebradil/kasha/commit/f4ca740bd82d01937767359976f8d0cd5815cc6f))
+
 ## [0.12.0](https://github.com/Zebradil/kasha/compare/v0.11.0...v0.12.0) (2026-11-15)
 
 

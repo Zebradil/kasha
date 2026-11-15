@@ -21,7 +21,7 @@ curl -s http://box.lan:5000/status
 | `store_bytes` | bytes on disk under the store root |
 | `pending_mirror_up` | local-origin generations whose mirror-up failed or is waiting on missing paths |
 | `flakes.<flake>.last_sync` | end of the last successful mirror-down cycle that covered this flake, RFC 3339 UTC |
-| `flakes.<flake>.gaps` | closure paths listed in this flake's manifests that no source could supply |
+| `flakes.<flake>.gaps` | closure paths listed in this flake's box-retained manifests that no source could supply |
 
 `flakes` stays empty until the box has a remote cache and has finished a sync cycle with at least one manifest.
 `/status` needs no authentication.

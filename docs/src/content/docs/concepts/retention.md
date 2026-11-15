@@ -43,7 +43,8 @@ Both sweeps are mark-and-sweep:
 
 The remote sweep also deletes the manifests retention did not keep, and anything under `roots/` that is not a valid v3
 manifest. The box sweep deletes no manifests: mirror-down drops a local manifest once it disappears from the remote, so
-remote retention reaches the box through sync.
+remote retention reaches the box through sync. Mirror-down fetches only the paths the box-retained manifests list, so
+the next sync never fetches back what a sweep deleted.
 
 ## Safety without locks
 
@@ -57,8 +58,8 @@ listed the store.
 
 `kasha sweep` runs the box sweep from a separate process, next to a running `kasha serve`, so the server's in-memory
 index cannot see its deletions directly. The sweep stamps `state/last-sweep` when it finishes, and at the start of its
-next sync cycle the server drops index entries whose narinfo is gone from disk. A deleted path that a manifest still
-lists then shows up as a gap again, and mirror-down fetches it back.
+next sync cycle the server drops index entries whose narinfo is gone from disk. A deleted path that a retained manifest
+still lists then shows up as a gap again, and mirror-down fetches it back.
 
 Two more guards protect data only the box holds:
 

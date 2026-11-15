@@ -124,8 +124,9 @@ nix-store --query --requisites ./result \
       --to 's3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto'
 ```
 
-The box discovers new manifests under `roots/<flake>/`, fetches listed paths from the remote cache first and upstreams
-for the rest, and records misses as gaps (re-probed each cycle, reported in `/status` — never a failing unit).
+The box discovers new manifests under `roots/<flake>/`, fetches the paths its retained generations list from the
+remote cache first and upstreams for the rest, and records misses as gaps (re-probed each cycle, reported in `/status` —
+never a failing unit).
 
 `packages.kasha-cache-push` wraps that whole sequence — resolve a flake attr's build closure, `nix store sign` it,
 `nix copy` it to S3, then emit the manifest — so producers pin the push logic and the manifest format from the same

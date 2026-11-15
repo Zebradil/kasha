@@ -273,7 +273,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (instance) (rate(kasha_narinfo_requests_total{job=\"$job\", instance=~\"$instance\", result=\"hit\"}[$__rate_interval])) / sum by (instance) (rate(kasha_narinfo_requests_total{job=\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance) (rate(kasha_narinfo_requests_total{job=\"$job\", instance=~\"$instance\", result=\"hit\"}[1h])) / sum by (instance) (rate(kasha_narinfo_requests_total{job=\"$job\", instance=~\"$instance\"}[1h]))",
           "legendFormat": "{{instance}}"
         }
       ],
@@ -281,7 +281,8 @@
       "options": {
         "legend": { "displayMode": "list", "placement": "bottom" },
         "tooltip": { "mode": "multi", "sort": "desc" }
-      }
+      },
+      "description": "Share of narinfo lookups answered by the box, over the preceding hour."
     },
     {
       "id": 10,
@@ -292,7 +293,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (instance, direction, source) (rate(kasha_nar_bytes_total{job=\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (instance, direction, source) (rate(kasha_nar_bytes_total{job=\"$job\", instance=~\"$instance\"}[$__rate_interval])) > 0",
           "legendFormat": "{{instance}} {{direction}} {{source}}"
         }
       ],
@@ -301,7 +302,7 @@
         "legend": { "displayMode": "list", "placement": "bottom" },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
-      "description": "NAR bytes per second. served: sent to clients. pull: fetched by pull-through, by source, as the source sent them. down: fetched by mirror-down, by source. up: mirrored to the remote cache. ingest: pushed into the box. Counted when a transfer completes, so one large NAR shows as a spike."
+      "description": "NAR bytes per second. served: sent to clients. pull: fetched by pull-through, by source, as the source sent them. down: fetched by mirror-down, by source. up: mirrored to the remote cache. ingest: pushed into the box. Counted when a transfer completes, so one large NAR shows as a spike. Directions without traffic are left out."
     },
     {
       "id": 11,
@@ -318,7 +319,7 @@
           "instant": true
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
       "options": {
         "orientation": "horizontal",
         "displayMode": "gradient",
@@ -387,7 +388,8 @@
               { "color": "transparent", "value": null },
               { "color": "red", "value": 0.1 }
             ]
-          }
+          },
+          "softMax": 0.2
         },
         "overrides": []
       },
@@ -589,7 +591,7 @@
     {
       "id": 24,
       "type": "row",
-      "title": "Storage and GC",
+      "title": "Storage",
       "gridPos": { "x": 0, "y": 63, "w": 24, "h": 1 },
       "collapsed": false,
       "panels": []
@@ -644,7 +646,7 @@
       "id": 27,
       "type": "bargauge",
       "title": "NARs by age",
-      "description": "NAR count per age bucket across the selected instances (bucket labels are upper bounds). Refreshed at most every 5 minutes.",
+      "description": "NAR count per age bucket across the selected instances (a bucket holds NARs younger than its label and older than the previous one). Refreshed at most every 5 minutes.",
       "gridPos": { "x": 0, "y": 72, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
@@ -656,7 +658,50 @@
           "format": "heatmap"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" } },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "3600" }, "properties": [{ "id": "displayName", "value": "1h" }] },
+          { "matcher": { "id": "byName", "options": "21600" }, "properties": [{ "id": "displayName", "value": "6h" }] },
+          { "matcher": { "id": "byName", "options": "86400" }, "properties": [{ "id": "displayName", "value": "1d" }] },
+          {
+            "matcher": { "id": "byName", "options": "259200" },
+            "properties": [{ "id": "displayName", "value": "3d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "604800" },
+            "properties": [{ "id": "displayName", "value": "7d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "1209600" },
+            "properties": [{ "id": "displayName", "value": "14d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "2592000" },
+            "properties": [{ "id": "displayName", "value": "30d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "5184000" },
+            "properties": [{ "id": "displayName", "value": "60d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "7776000" },
+            "properties": [{ "id": "displayName", "value": "90d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "15552000" },
+            "properties": [{ "id": "displayName", "value": "180d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "31536000" },
+            "properties": [{ "id": "displayName", "value": "365d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "+Inf" },
+            "properties": [{ "id": "displayName", "value": "older" }]
+          }
+        ]
+      },
       "options": {
         "orientation": "vertical",
         "displayMode": "basic",
@@ -668,7 +713,7 @@
       "id": 28,
       "type": "bargauge",
       "title": "NAR bytes by age",
-      "description": "Disk used per age bucket across the selected instances (bucket labels are upper bounds).",
+      "description": "Disk used per age bucket across the selected instances (a bucket holds NARs younger than its label and older than the previous one).",
       "gridPos": { "x": 12, "y": 72, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
@@ -680,7 +725,50 @@
           "format": "heatmap"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "3600" }, "properties": [{ "id": "displayName", "value": "1h" }] },
+          { "matcher": { "id": "byName", "options": "21600" }, "properties": [{ "id": "displayName", "value": "6h" }] },
+          { "matcher": { "id": "byName", "options": "86400" }, "properties": [{ "id": "displayName", "value": "1d" }] },
+          {
+            "matcher": { "id": "byName", "options": "259200" },
+            "properties": [{ "id": "displayName", "value": "3d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "604800" },
+            "properties": [{ "id": "displayName", "value": "7d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "1209600" },
+            "properties": [{ "id": "displayName", "value": "14d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "2592000" },
+            "properties": [{ "id": "displayName", "value": "30d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "5184000" },
+            "properties": [{ "id": "displayName", "value": "60d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "7776000" },
+            "properties": [{ "id": "displayName", "value": "90d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "15552000" },
+            "properties": [{ "id": "displayName", "value": "180d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "31536000" },
+            "properties": [{ "id": "displayName", "value": "365d" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "+Inf" },
+            "properties": [{ "id": "displayName", "value": "older" }]
+          }
+        ]
+      },
       "options": {
         "orientation": "vertical",
         "displayMode": "basic",
@@ -689,77 +777,18 @@
       }
     },
     {
-      "id": 29,
-      "type": "stat",
-      "title": "Last box GC sweep",
-      "description": "Age of the last box GC sweep attempt. Red past 2 days matches the KashaSweepStale alert. Absent until a box's first sweep.",
-      "gridPos": { "x": 0, "y": 80, "w": 6, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "time() - kasha_last_sweep_timestamp_seconds{job=\"$job\", instance=~\"$instance\"}",
-          "legendFormat": "{{instance}}",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 172800 }
-            ]
-          },
-          "noValue": "never"
-        }
-      },
-      "options": {
-        "graphMode": "none",
-        "colorMode": "value",
-        "textMode": "value_and_name",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      }
-    },
-    {
-      "id": 30,
-      "type": "timeseries",
-      "title": "Box GC deletions",
-      "gridPos": { "x": 6, "y": 80, "w": 18, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (instance) (increase(kasha_sweep_deleted_objects_total{job=\"$job\", instance=~\"$instance\"}[$__interval]))",
-          "legendFormat": "{{instance}}",
-          "interval": "5m"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "short", "min": 0, "decimals": 0, "custom": { "drawStyle": "bars", "fillOpacity": 80 } },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "description": "Narinfos and NARs deleted by box GC sweeps."
-    },
-    {
       "id": 41,
       "type": "row",
-      "title": "Mirror, sync and pushes",
-      "gridPos": { "x": 0, "y": 88, "w": 24, "h": 1 },
+      "title": "Mirror, sync, box GC and pushes",
+      "gridPos": { "x": 0, "y": 80, "w": 24, "h": 1 },
       "collapsed": true,
       "panels": [
         {
-          "id": 31,
+          "id": 29,
           "type": "stat",
           "title": "Pending mirror-up",
           "description": "Local-origin generations not yet mirrored to the remote cache. Brief nonzero values are normal after a push; one that stays above zero means mirror-up is stuck (KashaMirrorUpStuck).",
-          "gridPos": { "x": 0, "y": 89, "w": 8, "h": 4 },
+          "gridPos": { "x": 0, "y": 81, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -789,11 +818,11 @@
           }
         },
         {
-          "id": 32,
+          "id": 30,
           "type": "stat",
           "title": "Oldest flake sync",
           "description": "Age of the stalest flake's last mirror-down. Healthy is under KASHA_SYNC_INTERVAL plus the cycle's run time; red past 1h matches the KashaSyncStale alert.",
-          "gridPos": { "x": 8, "y": 89, "w": 8, "h": 4 },
+          "gridPos": { "x": 8, "y": 81, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -824,11 +853,11 @@
           }
         },
         {
-          "id": 33,
+          "id": 31,
           "type": "stat",
           "title": "Gaps",
           "description": "Closure paths across all flakes' manifests that no source could supply. Usually expected, never an error.",
-          "gridPos": { "x": 16, "y": 89, "w": 8, "h": 4 },
+          "gridPos": { "x": 16, "y": 81, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -847,10 +876,10 @@
           }
         },
         {
-          "id": 34,
+          "id": 32,
           "type": "timeseries",
           "title": "Time since last sync, per flake",
-          "gridPos": { "x": 0, "y": 93, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 85, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -881,10 +910,10 @@
           "description": "Dashed line at 1h: the KashaSyncStale threshold."
         },
         {
-          "id": 35,
+          "id": 33,
           "type": "timeseries",
           "title": "Gaps, per flake",
-          "gridPos": { "x": 12, "y": 93, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 85, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -900,10 +929,10 @@
           }
         },
         {
-          "id": 36,
+          "id": 34,
           "type": "timeseries",
           "title": "Time since newest generation was published, per branch",
-          "gridPos": { "x": 0, "y": 101, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 93, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -920,10 +949,10 @@
           "description": "Age of the newest manifest's timestamp: when CI or a local push last produced something for the branch. Unlike last sync, this only resets when there is new data."
         },
         {
-          "id": 37,
+          "id": 35,
           "type": "timeseries",
           "title": "Time since the box received a new generation, per branch",
-          "gridPos": { "x": 12, "y": 101, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 93, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -940,11 +969,11 @@
           "description": "Age of the newest manifest file on the box: when mirror-down (or a push) last brought a new generation. Survives restarts."
         },
         {
-          "id": 38,
+          "id": 36,
           "type": "table",
           "title": "Newest generation per branch",
           "description": "Published: manifest timestamp. Arrived: when the box stored it. Lag: arrival minus publish, i.e. how long replication took (negative when the box's clock is behind the producer's).",
-          "gridPos": { "x": 0, "y": 109, "w": 24, "h": 8 },
+          "gridPos": { "x": 0, "y": 101, "w": 24, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -985,10 +1014,10 @@
           ]
         },
         {
-          "id": 39,
+          "id": 37,
           "type": "timeseries",
           "title": "Ingest requests",
-          "gridPos": { "x": 0, "y": 117, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 109, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -1005,10 +1034,10 @@
           "description": "Pushes by result: accepted, rejected (bad content or signature) or unauthorized."
         },
         {
-          "id": 40,
+          "id": 38,
           "type": "timeseries",
           "title": "Pending mirror-up",
-          "gridPos": { "x": 12, "y": 117, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 109, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -1022,9 +1051,73 @@
             "legend": { "displayMode": "list", "placement": "bottom" },
             "tooltip": { "mode": "multi", "sort": "desc" }
           }
+        },
+        {
+          "id": 39,
+          "type": "stat",
+          "title": "Last box GC sweep",
+          "description": "Age of the last box GC sweep attempt. Red past 2 days matches the KashaSweepStale alert. Absent until a box's first sweep.",
+          "gridPos": { "x": 0, "y": 117, "w": 6, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "time() - kasha_last_sweep_timestamp_seconds{job=\"$job\", instance=~\"$instance\"}",
+              "legendFormat": "{{instance}}",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 172800 }
+                ]
+              },
+              "noValue": "never"
+            }
+          },
+          "options": {
+            "graphMode": "none",
+            "colorMode": "value",
+            "textMode": "value_and_name",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          }
+        },
+        {
+          "id": 40,
+          "type": "timeseries",
+          "title": "Box GC deletions",
+          "gridPos": { "x": 6, "y": 117, "w": 18, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (instance) (increase(kasha_sweep_deleted_objects_total{job=\"$job\", instance=~\"$instance\"}[$__interval]))",
+              "legendFormat": "{{instance}}",
+              "interval": "5m"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "decimals": 0,
+              "custom": { "drawStyle": "bars", "fillOpacity": 80 }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "list", "placement": "bottom" },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          },
+          "description": "Narinfos and NARs deleted by box GC sweeps."
         }
       ],
-      "description": "Needs KASHA_REMOTE (mirror and sync) or KASHA_TOKEN (pushes)."
+      "description": "Needs KASHA_REMOTE (mirror, sync and box GC) or KASHA_TOKEN (pushes)."
     }
   ]
 }

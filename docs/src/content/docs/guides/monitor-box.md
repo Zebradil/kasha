@@ -137,7 +137,7 @@ A Grafana dashboard over these metrics ships in the repository as
 [`deploy/grafana/kasha.json`](https://github.com/Zebradil/kasha/blob/main/deploy/grafana/kasha.json). It picks the
 Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables, and its
 thresholds match the alerts above. Rows for features a box does not use, such as pull-through or a cap, stay empty; the
-mirror and push row starts collapsed.
+mirror, box GC and push row starts collapsed.
 
 ## Tell healthy from stuck
 

@@ -120,9 +120,11 @@ has a remote cache.
 
 1. **Mirror-down** lists `roots/` in the remote cache and stores every new valid v3 manifest. A manifest that has
    disappeared from the remote is dropped locally too, which is how remote retention reaches the box. Then, for every
-   manifest, the box fetches each listed path it lacks: from the remote cache first, then from each upstream
-   (`https://cache.nixos.org` by default). A narinfo and its NAR always come from the same source. A path no source has
-   is a **gap**: counted in `/status`, retried at most once an hour, never an error.
+   manifest the box retains (see [Retention and GC](../retention/)), it fetches each listed path it lacks: from the
+   remote cache first, then from each upstream (`https://cache.nixos.org` by default). A narinfo and its NAR always come
+   from the same source. A path no source has is a **gap**: counted in `/status`, retried at most once an hour, never an
+   error. The remote keeps more generations than the box, and the box fetches none of the extra ones: the next box
+   sweep would delete them.
 2. **Mirror-up** takes every **local-origin** generation (one whose manifest was pushed to the box) that has not been
    mirrored yet, and uploads what the remote lacks: each NAR, then its narinfo, and the manifest last, so remote readers
    only ever see complete generations. It waits while any listed path is missing on the box.

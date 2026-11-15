@@ -65,14 +65,17 @@ pub fn box_sweep(
     sweep(store, now, grace, lru, || ())
 }
 
-/// Store hashes the retained manifests list, with the number of those
-/// manifests; `None` when the store has no manifest at all.
-pub(crate) fn marked(store: &Store, now: SystemTime) -> Result<Option<(usize, HashSet<String>)>> {
-    // Two passes so only one closure is in memory at a time: retention needs
-    // every manifest's header, marking only the retained closures.
-    let files = store.manifest_files()?;
+/// Generations the box retains, as `<flake>/<gen>`: the newest N per group,
+/// plus every unmirrored local-origin gen (box may hold the only copy).
+/// `None` when the store has no manifest at all. Mirror-down fills gaps of
+/// these only, so it never fetches what the sweep would delete.
+pub(crate) fn retained(
+    store: &Store,
+    files: &[(String, String, std::path::PathBuf)],
+    now: SystemTime,
+) -> Result<Option<HashSet<String>>> {
     let mut gens = Vec::new();
-    for (flake, gen_id, path) in &files {
+    for (flake, gen_id, path) in files {
         if let Some(m) = store.load_manifest(path)? {
             gens.push(to_gen(format!("{flake}/{gen_id}"), &m));
         }
@@ -81,12 +84,23 @@ pub(crate) fn marked(store: &Store, now: SystemTime) -> Result<Option<(usize, Ha
         return Ok(None);
     }
     let mut keep = retain(&gens, &Policy::boxed(), now);
-    drop(gens);
-    for (flake, gen_id, _) in &files {
+    for (flake, gen_id, _) in files {
         if store.is_local_origin(flake, gen_id) && !store.is_mirrored(flake, gen_id) {
             keep.insert(format!("{flake}/{gen_id}"));
         }
     }
+    Ok(Some(keep))
+}
+
+/// Store hashes the retained manifests list, with the number of those
+/// manifests; `None` when the store has no manifest at all.
+pub(crate) fn marked(store: &Store, now: SystemTime) -> Result<Option<(usize, HashSet<String>)>> {
+    // Two passes so only one closure is in memory at a time: retention needs
+    // every manifest's header, marking only the retained closures.
+    let files = store.manifest_files()?;
+    let Some(keep) = retained(store, &files, now)? else {
+        return Ok(None);
+    };
 
     let mut mark: HashSet<String> = HashSet::new();
     for (flake, gen_id, path) in &files {

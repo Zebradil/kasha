@@ -105,10 +105,14 @@ impl Mirror<'_> {
 
         // Gap fill: fetch what exists, count what doesn't. A fetched path
         // enters the index, so later manifests no longer list it as a gap.
+        // Only box-retained generations: the remote keeps more, and a path
+        // only those list would go at the next box sweep and come back after.
+        let files = self.store.manifest_files()?;
+        let keep = crate::gc::retained(self.store, &files, SystemTime::now())?.unwrap_or_default();
         let mut misses = self.misses.borrow_mut();
         misses.retain(|_, t| t.elapsed() < MISS_RETRY);
         let mut report = DownReport::default();
-        for (flake, _, path) in self.store.manifest_files()? {
+        for (flake, gen_id, path) in files {
             let Some(m) = self.store.load_manifest(&path)? else {
                 continue;
             };
@@ -120,6 +124,9 @@ impl Mirror<'_> {
                     .or_insert(Newest { published, arrived });
                 e.published = e.published.max(published);
                 e.arrived = e.arrived.max(arrived);
+            }
+            if !keep.contains(&format!("{flake}/{gen_id}")) {
+                continue;
             }
             let mut unresolved = 0;
             for path in self.store.gaps(&m) {
@@ -466,6 +473,54 @@ References: \n"
         let report = m.down().unwrap();
         assert_eq!(report.fetched_paths, 1);
         assert_eq!(report.gaps["znix"], 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The remote keeps more generations than the box (`Policy::remote` over
+    /// `Policy::boxed`). Filling an older one's gaps would store paths the
+    /// next box sweep deletes, and the cycle after it fetches again.
+    #[test]
+    fn down_fills_gaps_only_in_generations_the_box_retains() {
+        let (sk, pk) = keypair();
+        let keys = [pk];
+        let dir = tmp();
+        let store = Store::open(&dir).unwrap();
+        let remote = FakeRemote::default();
+
+        let mut hashes = Vec::new();
+        for (i, c) in ['a', 'b', 'c', 'd'].into_iter().enumerate() {
+            let (h, info, nar) = object(&sk, c, "pkg");
+            remote.insert(&format!("{h}.narinfo"), info.as_bytes());
+            remote.insert(&format!("nar/{h}.nar.xz"), &nar);
+            let gen_id = format!("main-{i}-x");
+            let mut m: serde_json::Value = serde_json::from_slice(&manifest(
+                &gen_id,
+                "main",
+                &[&format!("/nix/store/{h}-pkg")],
+            ))
+            .unwrap();
+            m["timestamp"] = format!("2026-08-2{i}T10:00:00Z").into();
+            remote.insert(
+                &format!("roots/znix/{gen_id}.json"),
+                m.to_string().as_bytes(),
+            );
+            hashes.push(h);
+        }
+
+        let m = mirror(&store, &remote, &keys);
+        let report = m.down().unwrap();
+        assert_eq!(report.fetched_paths, 3);
+        assert!(
+            !store.has(&hashes[0]),
+            "oldest of four main gens is not box-retained"
+        );
+        assert_eq!(report.gaps["znix"], 0);
+        // Freshness still sees every manifest the box holds.
+        assert_eq!(store.manifest_files().unwrap().len(), 4);
+
+        let swept = crate::gc::box_sweep(&store, SystemTime::now(), Duration::ZERO, false).unwrap();
+        assert!(swept.deleted.is_empty(), "swept {:?}", swept.deleted);
+        assert_eq!(m.down().unwrap().fetched_paths, 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 

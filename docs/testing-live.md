@@ -81,7 +81,7 @@ curl -fsS "$KASHA_URL/nix-cache-info"
 `/status` reports object count, store bytes, `pending_mirror_up`, and per-flake
 `last_sync` + `gaps`. A healthy box has `last_sync` within the last 5 minutes
 (`KASHA_SYNC_INTERVAL=300`) and `pending_mirror_up: 0`. `gaps` counts closure paths listed in
-a manifest that neither the remote cache nor the upstreams could supply — a non-zero steady
+a box-retained manifest that neither the remote cache nor the upstreams could supply — a non-zero steady
 value is expected, not a failure.
 
 The sync worker logs one line per cycle:

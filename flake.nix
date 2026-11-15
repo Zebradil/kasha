@@ -207,8 +207,10 @@
               '';
         }
         # Real nix client against the server: signed push (nix copy --to),
-        # manifest emit, substitute pull with sig gate. NixOS VM, Linux only.
-        // lib.optionalAttrs (lib.hasSuffix "linux" system) {
+        # manifest emit, substitute pull with sig gate. NixOS VM, so it needs KVM:
+        # x86_64-linux only, because CI's ARM Linux runners have none and the test
+        # exercises nothing architecture-specific.
+        // lib.optionalAttrs (system == "x86_64-linux") {
           integration = import ./tests/v2.nix {
             inherit pkgs;
             kasha = tested;

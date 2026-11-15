@@ -71,6 +71,11 @@ _Avoid_: populate-nix-cache (the pre-move name in znix)
 One published set of build outputs for one flake, identified by a gen-id and
 timestamp, described by exactly one root manifest.
 
+**Release-tag generation**:
+A generation whose branch is a release tag (`v1.2.3`, optionally `-suffix`). Remote
+retention never treats its group as stale, so the newest one of every release stays
+(ADR-0014).
+
 **Selection**:
 The client-side decision of which substituter to read from — box when reachable,
 remote cache otherwise. MVP selection is a static substituter list plus a low

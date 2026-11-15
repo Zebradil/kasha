@@ -14,7 +14,9 @@ shares the other tier.
 
 A group goes **stale** when its newest generation trails the newest generation of the same flake and tier by `S` or
 more. A stale group keeps only what the `M` rule keeps. This retires groups the flake has moved past: a renamed or
-removed attr, an old release tag, a one-off branch name. Staleness is measured against the flake, not the clock, so a
+removed attr, a one-off branch name. A **release tag** (`v1.2.3`, optionally with a `-` suffix such as `v1.2.3-rc.1`)
+never goes stale, so the newest generation of every release stays and a consumer pinned to it keeps hitting the cache.
+Staleness is measured against the flake, not the clock, so a
 flake that stops publishing keeps its newest generations; and against the tier, so pull-request churn never makes
 `main` stale.
 

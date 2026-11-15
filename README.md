@@ -164,7 +164,7 @@ GCs them until their manifest is confirmed present in the remote cache.
   generation if it is younger than `M` or among the `N` newest in its group (defaults: main `N=5, M=4wk`, other
   `N=1, M=1wk`; override with `--main-keep`, `--main-age-weeks`, `--other-keep`, `--other-age-weeks`). A group whose
   newest generation trails the newest of its flake's tier by `--stale-weeks` (default 4) loses the `N` rule, so
-  renamed attrs and old tags expire (ADR-0010). `kasha ls` prints each generation's verdict without sweeping. `--dry-run`
+  renamed attrs and one-off branches expire (ADR-0010); release tags (`v1.2.3`) never do (ADR-0014). `kasha ls` prints each generation's verdict without sweeping. `--dry-run`
   reports only. The workflow runs `ghcr.io/zebradil/kasha-box:edge` rather than building from source, so a gc change
   reaches the schedule only once the oci workflow has published it. Manifest and narinfo reads are one request per
   object, deletes go out in batches of up to 1000; progress is logged every 1000.

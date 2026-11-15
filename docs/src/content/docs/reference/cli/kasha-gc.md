@@ -26,7 +26,7 @@ Options:
       --other-age-weeks <OTHER_AGE_WEEKS>
           Also keep non-`main` generations younger than this many weeks [default: 1]
       --stale-weeks <STALE_WEEKS>
-          Drop a group's count-retained generations once its newest one trails the newest of its flake's tier (main or other) by this many weeks; 0 disables [default: 4]
+          Drop a group's count-retained generations once its newest one trails the newest of its flake's tier (main or other) by this many weeks; release tags (`v1.2.3`) never go stale; 0 disables [default: 4]
   -h, --help
           Print help
 ```

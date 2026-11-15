@@ -208,7 +208,7 @@ struct PolicyArgs {
     other_age_weeks: Option<u32>,
     /// Drop a group's count-retained generations once its newest one trails
     /// the newest of its flake's tier (main or other) by this many weeks;
-    /// 0 disables [default: 4].
+    /// release tags (`v1.2.3`) never go stale; 0 disables [default: 4].
     #[arg(long)]
     stale_weeks: Option<u32>,
 }

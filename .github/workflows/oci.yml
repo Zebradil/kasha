@@ -12,8 +12,42 @@ permissions:
   id-token: write
   attestations: write
 
+# A release tag points at a commit main already built and pushed as `sha-<sha>`. Queueing the tag
+# run behind the main run of the same commit lets it retag that image instead of building it again.
+# A pull_request's sha is its merge commit, so PRs never share a group with main.
+concurrency:
+  group: oci-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
+  retag:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    outputs:
+      done: ${{ steps.retag.outcome == 'success' }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --preserve-digests: the attestation main pushed is bound to the digest, so the version tag
+      # must name the same manifest. On failure (main never pushed this sha) the image job builds.
+      - name: Retag main image
+        id: retag
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kasha-box"
+          skopeo copy --all --preserve-digests \
+            "docker://$image:sha-${GITHUB_SHA::12}" "docker://$image:$GITHUB_REF_NAME"
+
   image:
+    needs: retag
+    if: ${{ !cancelled() && needs.retag.outputs.done != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -78,6 +78,12 @@ jobs:
   # closure with it, on every consumer run.
   build:
     needs: check
+    # A release commit is built twice: by its own push to main and by release-please.yml's publish
+    # call. Serialised per commit and system, whichever starts second substitutes the first's pushed
+    # closure instead of running a parallel full rebuild. A pull_request's sha is its merge commit,
+    # so PRs never share a group with main.
+    concurrency:
+      group: ci-build-${{ github.sha }}-${{ matrix.system }}
     strategy:
       # A Darwin runner queueing or failing must not cancel the Linux publish,
       # and vice versa: each leg feeds a different system's consumers.

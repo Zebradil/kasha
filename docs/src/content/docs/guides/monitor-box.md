@@ -77,7 +77,7 @@ are being sent away: raise `KASHA_MAX_INFLIGHT`.
 
 The `kasha_reencode_*` metrics exist only with `KASHA_REENCODE` on. A rising `failed` count names objects whose NAR does
 not match its narinfo, a pushed one most likely; the logs name each (`cannot re-encode, not tried again until restart`).
-The old files go only with orphan removal, so `kasha_nar_compression_bytes{compression="xz"}` falls up to a day after
+The old files go only with orphan removal, so `kasha_nar_compression_bytes{compression="xz"}` falls about a day after
 `kasha_reencode_bytes_total` rises, and not at all on a box without orphan removal.
 
 The `kasha_unlisted_*` metrics exist only with `KASHA_UNLISTED_MAX_BYTES` set. `kasha_unlisted_bytes` sits at or below

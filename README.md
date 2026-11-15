@@ -82,8 +82,8 @@ Pushed and mirrored-down NARs are stored in the encoding they arrived in. With `
 each stored `xz`, `bzip2` or uncompressed NAR as zstd once it has a narinfo: in the background on every box, at most
 1 GiB of NARs per 5-minute pass, and before mirror-up uploads a path, so the remote cache receives zstd. The narinfo is
 replaced only if it did not change meanwhile, and keeps its signatures. Paths no manifest lists are re-encoded only when
-used in the last 12 hours. The old file is left to orphan removal, which runs with `KASHA_UNLISTED_MAX_BYTES` set or
-with a remote cache and manifests; a box with neither keeps old files. See
+used in the last 12 hours. The old file stays for 24 hours after the swap, then goes with orphan removal, which runs
+with `KASHA_UNLISTED_MAX_BYTES` set or with a remote cache and manifests; a box with neither keeps old files. See
 [How the box works](docs/src/content/docs/concepts/eager-replica.md#re-encoding-stored-nars) and
 [ADR-0015](docs/adr/0015-reencode-stored-nars-as-zstd.md).
 

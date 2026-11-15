@@ -5,7 +5,9 @@
 //! zstd under `nar/<nix32 NarHash>.nar.zst`, the name pull-through gives it
 //! (ADR-0012), so the two share files. The narinfo is then replaced by the
 //! box's rendering of it naming the new file, but only while the stored one
-//! is still the one read. The old file is left to orphan removal.
+//! is still the one read. The old file is touched at the swap and left to
+//! orphan removal, so it stays the grace window for a client holding the
+//! old narinfo.
 //!
 //! Two callers: a pass on `serve`'s maintenance thread, `BUDGET` bytes of
 //! NARs at a time, and mirror-up, before it uploads a path of a local-origin
@@ -251,7 +253,15 @@ fn reencode(
         let new_info = NarInfo::parse(&new)?;
         let nar_tmp = tmp.as_ref().map(|t| t.0.as_path());
         let used = used.max(SystemTime::now() - USED_WITHIN);
-        match store.publish_reencoded(&new_info, new.as_bytes(), raw.as_bytes(), nar_tmp, used)? {
+        let published = store.publish_reencoded(
+            &new_info,
+            new.as_bytes(),
+            raw.as_bytes(),
+            &old,
+            nar_tmp,
+            used,
+        )?;
+        match published {
             Published::Stored => return Ok(Outcome::Swapped { size: meta.size }),
             Published::Lost => return Ok(Outcome::Lost),
             Published::NarExists => {
@@ -658,6 +668,35 @@ Deriver: {hash}-pkg-{c}.drv\n",
                 "{f:?}"
             );
         }
+        let _ = fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn the_old_nar_stays_the_grace_window_after_the_swap() {
+        let store = Store::open(tmp()).unwrap();
+        let r = Reencoder::default();
+        let now = SystemTime::now();
+        // Listed and long unused, as a mirrored-down path on a pre-warmed box.
+        let p = put(&store, 'a', "xz", now - 30 * 24 * HOUR);
+        list(&store, "main-1-x", &[&p]);
+        r.path(&store, &p.hash, true);
+        let old = store.nar_path(&p.file).unwrap();
+        assert!(mtime(&old) > now - HOUR);
+
+        // A client that read the old narinfo just before still gets its NAR.
+        let lru = crate::gc::Lru::new(1);
+        let evicted = crate::gc::evict(&store, SystemTime::now(), &lru, &|_| false).unwrap();
+        assert!(evicted.orphans.is_empty(), "{:?}", evicted.orphans);
+        let swept = crate::gc::box_sweep(&store, SystemTime::now(), GRACE, false).unwrap();
+        assert!(swept.deleted.is_empty(), "{:?}", swept.deleted);
+        assert!(old.exists());
+
+        // Past the grace window again, orphan removal takes it, and only it.
+        let later = SystemTime::now() + GRACE + HOUR;
+        let swept = crate::gc::box_sweep(&store, later, GRACE, false).unwrap();
+        assert_eq!(swept.deleted, [format!("nar/{}", p.file)]);
+        assert_eq!(nar_dir(&store), [p.zst.as_str()]);
+        assert!(dangling(&store).is_empty());
         let _ = fs::remove_dir_all(&store.root);
     }
 

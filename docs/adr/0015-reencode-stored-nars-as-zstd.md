@@ -66,14 +66,17 @@ path is not tried again until restart. A pushed NAR is never decoded at `PUT`, s
 first content check. A failed write is told from a bad NAR by checking again without writing;
 store errors are counted apart and retried.
 
-*Old files.* Nothing new deletes them, and their mtime is left as it is. With
-`KASHA_UNLISTED_MAX_BYTES` set, eviction's orphan pass removes a NAR no narinfo names once its
-mtime is past 24 hours, on every box; with a remote cache and at least one manifest, the box
-sweep does. A box with neither keeps them. Until then an old file counts against no cap
-(ADR-0013 counts a NAR only while a narinfo names it), so the store exceeds the cap by those
-bytes for up to a day. A client holding the old narinfo gets the old file while it is there;
-for a path last used more than a day ago that can be until the next pass, after which the client
-gets `404` and falls back to its next substituter (ADR-0011).
+*Old files.* Nothing new deletes them. The swap touches the old file to now, under the same
+lock, so it stays the full grace window after no narinfo names it, however long ago it was last
+used: a client that read the old narinfo just before the swap, as an ephemeral consumer does
+seconds to minutes before it asks for the NAR, still gets it. With `KASHA_UNLISTED_MAX_BYTES`
+set, eviction's orphan pass removes a NAR no narinfo names once its mtime is past 24 hours, on
+every box; with a remote cache and at least one manifest, the box sweep does. A box with neither
+keeps them. Until then an old file counts against no cap (ADR-0013 counts a NAR only while a
+narinfo names it), so the store exceeds the cap by those bytes for a day. A client that holds
+the old narinfo longer than that (a long-lived one caches narinfos for 30 days) gets `404` and
+falls back to its next substituter (ADR-0011). The touch has a side effect: another narinfo
+that still names the old file, a path sharing that NAR, looks used now to eviction (ADR-0013).
 
 *Metrics.* Always on: NAR files on disk and their bytes by the encoding their name says, from
 the cached `nar/` scan (`kasha_nar_compression_objects`, `kasha_nar_compression_bytes`), and NAR
@@ -93,15 +96,15 @@ Rejected (#126):
 
 - *ADR-0008.* "Objects are stored byte-identical as received": with the flag on, a pushed or
   mirrored-down NAR is stored again as zstd and its narinfo replaced by the box's rendering; the
-  file as received stays until orphan removal takes it.
+  file as received stays for the grace window, until orphan removal takes it.
 - *ADR-0012.* "Pushed objects, objects mirrored down and objects already on disk stay as they
   arrived and are served as they are": with the flag on, each is re-encoded once it has a
   narinfo.
 
 Consequences:
 
-- The box spends CPU on objects it only stored before, and for up to a day holds both files of a
-  re-encoded NAR. A pass needs the memory of one pull-through worker: the decoder (at most
+- The box spends CPU on objects it only stored before, and for a day holds both files of a
+  re-encoded NAR, on a box that removes orphans at all. A pass needs the memory of one pull-through worker: the decoder (at most
   128 MiB for xz) and a level-3 encoder.
 - The remote cache holds more bytes: 3.1 GB as zstd against 2.7 GB as xz for the 932 paths
   above, paid by a consumer on a slow link.

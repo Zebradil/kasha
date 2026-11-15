@@ -108,9 +108,10 @@ A path a retained manifest lists is always re-encoded. A path no manifest lists 
 the last 12 hours, and its new files keep its last use, so re-encoding never makes a path look recently used to
 eviction.
 
-The old file is not deleted by the re-encoder. A client holding the old narinfo keeps getting it until orphan removal
-takes it, a day or more after its last use: with `KASHA_UNLISTED_MAX_BYTES` set, the eviction pass removes it on any box;
-with a remote cache and at least one manifest, the box sweep does. A box with neither keeps the old files.
+The old file is not deleted by the re-encoder. It stays for 24 hours after the narinfo is replaced, so a client that
+read the old narinfo just before keeps getting it; then orphan removal takes it: with `KASHA_UNLISTED_MAX_BYTES` set, the
+eviction pass removes it on any box; with a remote cache and at least one manifest, the box sweep does. A box with
+neither keeps the old files.
 
 ## The sync cycle
 

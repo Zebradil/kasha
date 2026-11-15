@@ -170,7 +170,7 @@ Before you enable it:
 
 - **Budget CPU and disk.** A pass every 5 minutes decodes up to 1 GiB of NARs on one core, an estimated 10 seconds of
   it for xz. Mirror-up re-encodes the paths it uploads at once, without that limit. Each re-encoded NAR is on disk twice
-  until orphan removal takes the old file, up to a day later.
+  until orphan removal takes the old file, a day later.
 - **Know who removes the old files.** With `KASHA_UNLISTED_MAX_BYTES` set, eviction removes them on any box; with a
   remote cache and at least one manifest, the box sweep does. A box with neither keeps them, and its store grows by the
   zstd copies. Until it is removed, an old file counts against no cap, so the store exceeds `KASHA_UNLISTED_MAX_BYTES`

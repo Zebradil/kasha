@@ -193,15 +193,17 @@ impl Store {
     /// NAR this call creates and the narinfo get mtime `used`, so the path
     /// keeps its last use; a reused NAR is touched as by every writer, since
     /// eviction may be about to remove it for another path that names it.
+    /// The NAR file `old_nar` the replaced narinfo named is touched too.
     pub fn publish_reencoded(
         &self,
         info: &NarInfo,
         raw: &[u8],
         old: &[u8],
+        old_nar: &Path,
         nar_tmp: Option<&Path>,
         used: SystemTime,
     ) -> Result<Published> {
-        self.publish(info, raw, nar_tmp, Some((old, used)))
+        self.publish(info, raw, nar_tmp, Some((old, used, old_nar)))
     }
 
     fn publish(
@@ -209,7 +211,7 @@ impl Store {
         info: &NarInfo,
         raw: &[u8],
         nar_tmp: Option<&Path>,
-        replace: Option<(&[u8], SystemTime)>,
+        replace: Option<(&[u8], SystemTime, &Path)>,
     ) -> Result<Published> {
         let narinfo = self.narinfo_path(info.store_hash())?;
         let file = info.url.strip_prefix("nar/").context("nar URL")?;
@@ -231,14 +233,14 @@ impl Store {
         narinfo_tmp: &Path,
         nar: &Path,
         nar_tmp: Option<&Path>,
-        replace: Option<(&[u8], SystemTime)>,
+        replace: Option<(&[u8], SystemTime, &Path)>,
     ) -> Result<Published> {
         // Every narinfo writer takes this lock, so the check below holds
         // until this narinfo is in place.
         let mut idx = self.index.write().unwrap();
         let lost = match replace {
             None => narinfo.exists(),
-            Some((old, _)) => fs::read(narinfo).map_or(true, |stored| stored != old),
+            Some((old, _, _)) => fs::read(narinfo).map_or(true, |stored| stored != old),
         };
         if lost {
             return Ok(Published::Lost);
@@ -250,7 +252,7 @@ impl Store {
                     let _ = fs::remove_file(tmp);
                     // Set under the lock: no sweep or eviction judges the
                     // file by this time before its narinfo is in place.
-                    if let Some((_, used)) = replace
+                    if let Some((_, used, _)) = replace
                         && let Err(e) = set_mtime(nar, used)
                     {
                         let _ = fs::remove_file(nar);
@@ -284,8 +286,18 @@ impl Store {
         idx.insert(info.store_hash().to_string(), info.url.clone());
         // On the narinfo in place, not its temp file: `clean_temps` takes a
         // temp file this old for abandoned.
-        if let Some((_, used)) = replace {
-            set_mtime(narinfo, used).with_context(|| format!("dating {}", narinfo.display()))?;
+        if let Some((_, used, old_nar)) = replace {
+            let dated = set_mtime(narinfo, used);
+            // No narinfo names the old NAR from now on, so orphan removal and
+            // the sweep judge it by age: touched, it stays the grace window
+            // for a client that read the old narinfo just before the swap.
+            match touch(old_nar) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(e).with_context(|| format!("touching {}", old_nar.display()));
+                }
+                _ => {}
+            }
+            dated.with_context(|| format!("dating {}", narinfo.display()))?;
         }
         Ok(Published::Stored)
     }

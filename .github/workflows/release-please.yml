@@ -10,9 +10,8 @@ name: Release
 # PR fires no `pull_request` events, so CI would never run on the release PR. The policy admits
 # only `.github/workflows/release-please.yml` on main, so this file's name is load-bearing.
 #
-# Cutting the release is only half the job: the tagged closure must also reach the cache under a
-# generation named for the tag, or the pin decays into a full rebuild once five newer main builds
-# have landed. That is the `publish` job below.
+# The tagged closure reaches the cache under a generation named for the tag from ci.yml's own run
+# on the release commit, not from here.
 
 on:
   push:
@@ -30,9 +29,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    outputs:
-      release-created: ${{ steps.release.outputs.release_created }}
-      tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Exchange OIDC token for GitHub token
         uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
@@ -48,15 +44,3 @@ jobs:
           token: ${{ steps.sts.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  # The release commit's own push already published this closure under `main`; this republishes the
-  # identical store paths under a generation named for the tag, which is the one kasha's retention
-  # keeps indefinitely. The build is therefore a cache hit in the normal case — and correct, not
-  # merely cheap, if it races the main run and rebuilds: both legs push the same paths.
-  publish:
-    needs: release
-    if: ${{ needs.release.outputs.release-created == 'true' }}
-    uses: ./.github/workflows/ci.yml
-    secrets: inherit
-    with:
-      manifest-branch: ${{ needs.release.outputs.tag }}

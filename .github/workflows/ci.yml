@@ -10,23 +10,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # release-please.yml calls this after cutting a release, to republish the same
-  # closure under a generation named for the tag rather than for `main`. Not a
-  # `tags:` trigger: the direct call passes the tag as `manifest-branch` and does
-  # not depend on which token pushed the tag.
-  workflow_call:
-    inputs:
-      manifest-branch:
-        description: >
-          Retention branch recorded on the generation manifest, overriding the ref name. kasha's
-          retention groups by (flake, branch, attr) and always keeps the newest generation of every
-          group, so a tag — the only member of its group, forever — is never swept, while `main`
-          generations fall out after five newer ones. Passing the tag here is what keeps a
-          consumer's pinned `emit-manifest@<sha> # v1.2.3` hitting the cache instead of decaying
-          into a full rebuild a month later.
-        type: string
-        required: false
-        default: ''
 
 permissions:
   contents: read
@@ -91,6 +74,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The parent commit, for the release check below.
+          fetch-depth: 2
       - uses: zebradil/nix-ci/.github/actions/setup-nix@fa4ea864c879251657017bb0e4aed9009c0d8b2b # v2.0.2
         with:
           extra-substituters: ${{ vars.KASHA_CACHE_URL }}
@@ -148,9 +134,36 @@ jobs:
           # bare `checks` would give both matrix legs the same id and let whichever
           # finishes last overwrite the other's manifest.
           attr: checks.${{ matrix.system }}
-          # Empty on push and pull_request, where emit-manifest falls back to the
-          # ref name. Set only by release-please.yml.
-          branch: ${{ inputs.manifest-branch }}
+          s3-url: ${{ vars.CACHE_S3_URL }}
+          aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
+
+      # kasha's retention groups by (flake, branch, attr) and always keeps the newest generation of
+      # every group, so a generation filed under a release tag — the only member of its group,
+      # forever — is never swept, while `main` generations fall out after five newer ones. That is
+      # what keeps a consumer's pinned `emit-manifest@<sha> # v1.2.3` hitting the cache instead of
+      # decaying into a full rebuild a month later.
+      #
+      # release-please tags a release exactly when its merged release PR bumps
+      # .release-please-manifest.json, so the tag is read from that file rather than waited for:
+      # release-please.yml pushes it concurrently with this run.
+      - name: Detect release commit
+        id: release
+        if: ${{ always() && steps.pushed.outputs.any == 'true' && github.event_name == 'push' }}
+        run: |
+          if ! git diff --quiet HEAD^ HEAD -- .release-please-manifest.json; then
+            echo "tag=v$(jq -r '."."' .release-please-manifest.json)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish kasha manifest for the release tag
+        if: ${{ always() && steps.release.outputs.tag != '' }}
+        continue-on-error: true
+        uses: ./.github/actions/emit-manifest
+        with:
+          flake: kasha
+          paths-file: ${{ steps.build.outputs.paths-file }}
+          attr: checks.${{ matrix.system }}
+          branch: ${{ steps.release.outputs.tag }}
           s3-url: ${{ vars.CACHE_S3_URL }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}

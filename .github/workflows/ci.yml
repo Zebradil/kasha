@@ -69,6 +69,8 @@ jobs:
         include:
           - system: x86_64-linux
             runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
           - system: aarch64-darwin
             runner: macos-26
     runs-on: ${{ matrix.runner }}

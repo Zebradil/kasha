@@ -189,7 +189,7 @@ pull on another node gated by the trusted public key.
 
 ## Prebuilt kasha
 
-CI publishes its `x86_64-linux` and `aarch64-darwin` check outputs — the binary among them — to the same remote cache,
+CI publishes its `x86_64-linux`, `aarch64-linux` and `aarch64-darwin` check outputs — the binary among them — to the same remote cache,
 signed with a CI-only key and rooted under `roots/kasha/`, so kasha's own retention policy governs them. Pushes to
 `main` and same-repository pull requests publish; fork pull requests only read.
 

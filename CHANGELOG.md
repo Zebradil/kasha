@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Zebradil/kasha/compare/v0.10.0...v0.11.0) (2026-11-15)
+
+
+### Features
+
+* never expire release-tag generations (ADR-0014) ([#118](https://github.com/Zebradil/kasha/issues/118)) ([166e4be](https://github.com/Zebradil/kasha/commit/166e4bef37aeb0d22d324fdffefa1ba6b9a472fb))
+
 ## [0.10.0](https://github.com/Zebradil/kasha/compare/v0.9.0...v0.10.0) (2026-11-15)
 
 

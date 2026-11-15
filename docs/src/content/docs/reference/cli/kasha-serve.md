@@ -15,6 +15,8 @@ Options:
           Store root (flat binary-cache layout) [env: KASHA_DATA=] [default: /kasha]
       --listen <LISTEN>
           Listen address for the cache HTTP server [env: KASHA_LISTEN=] [default: 0.0.0.0:5000]
+      --probe-listen <PROBE_LISTEN>
+          Listen address for /livez and /readyz, answered from their own thread: during the boot scan and while every request slot is held. Unset, no probe listener runs [env: KASHA_PROBE_LISTEN=]
       --token <TOKEN>
           Write token; writes are refused when unset [env: KASHA_TOKEN]
       --trusted-keys <TRUSTED_KEYS>

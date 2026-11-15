@@ -41,6 +41,7 @@ Environment contract (all also available as flags, see `kasha serve --help`):
 | ------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------- |
 | `KASHA_DATA`                                | store root (flat binary-cache layout)                                           | `/kasha`                  |
 | `KASHA_LISTEN`                              | listen address                                                                  | `0.0.0.0:5000`            |
+| `KASHA_PROBE_LISTEN`                        | listen address for `/livez` and `/readyz`, open during boot; off when unset     | —                         |
 | `KASHA_TRUSTED_KEYS`                        | trusted narinfo signing keys (required)                                         | —                         |
 | `KASHA_TOKEN`                               | write token; writes refused when unset                                          | —                         |
 | `KASHA_REMOTE`                              | remote cache `s3://bucket?endpoint=…&region=…`; mirroring and GC off when unset | —                         |

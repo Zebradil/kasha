@@ -59,6 +59,37 @@ docker run -d -p 5000:5000 -v kasha-data:/kasha \
 The store is flat files with no database, so any storage class works for the volume. On k3s, run the box as an
 always-on workload with a stable `LoadBalancer` or `NodePort` address and its data on a PVC mounted at `/kasha`.
 
+### Probes
+
+At boot the box reads every narinfo before it opens port 5000; on a network volume with a cold cache that takes
+minutes for a large store. Under load, its request cap also holds back new requests, probes included. Set
+`KASHA_PROBE_LISTEN` to answer probes on a port of their own, open from the first second and outside the cap:
+
+| Path | 200 | 503 |
+| --- | --- | --- |
+| `/readyz` | port 5000 is serving | still booting; the body says how many narinfos are indexed so far |
+| `/livez` | the process is serving or booting | no request slot freed for 60 s: every slot is held by a stuck transfer |
+
+`/readyz` stays 200 when every slot is busy: with one replica, NotReady would turn a queue into an outage.
+
+```yaml
+env:
+  - { name: KASHA_PROBE_LISTEN, value: "0.0.0.0:5001" }
+ports:
+  - { containerPort: 5000, name: http }
+  - { containerPort: 5001, name: probe }
+readinessProbe:
+  httpGet: { path: /readyz, port: probe }
+  periodSeconds: 10
+livenessProbe:
+  httpGet: { path: /livez, port: probe }
+  periodSeconds: 30
+  failureThreshold: 5
+```
+
+A restart drops every in-flight download, so keep `livenessProbe` tolerant. With `/livez` the box answers while
+booting, so no `startupProbe` is needed.
+
 :::caution[Unverified]
 The `docker run` above needs real keys and bucket credentials and was not run while writing this page. CI runs a
 smoke test of the image with only `KASHA_TRUSTED_KEYS` set (`.github/workflows/oci.yml`).

@@ -184,6 +184,10 @@ Lines worth alerting on:
 | `rejected ingest` | warn | a push was refused, e.g. an untrusted signature |
 | `unauthorized write` | warn | a write arrived without a valid token |
 
+Before it opens its port the box indexes every narinfo, logging `indexing store` with the count found and
+`store indexed` with `elapsed_ms` when done; a long gap between the two is storage latency. With
+`KASHA_PROBE_LISTEN` set, `/readyz` reports the scan's progress meanwhile ([Probes](../deploy-box/#probes)).
+
 Each successful cycle logs `synced` with `fetched` and `gaps` counts. On startup the box warns when `KASHA_TOKEN` or
 `KASHA_REMOTE` is unset, since writes or mirroring are then off.
 

@@ -216,8 +216,14 @@ impl App {
 /// its TCP connection dies (tiny_http sets no write timeout, so a suspended
 /// laptop holds a slot until keepalive reaps it). Non-blocking I/O is the
 /// upgrade path if the cap is ever reached in anger.
-pub fn serve(app: Arc<App>, listen: &str, max_inflight: usize) -> Result<()> {
+pub fn serve(
+    app: Arc<App>,
+    listen: &str,
+    max_inflight: usize,
+    health: &crate::probe::Health,
+) -> Result<()> {
     let server = Server::http(listen).map_err(|e| anyhow::anyhow!("bind {listen}: {e}"))?;
+    health.set_ready();
     tracing::info!(
         listen,
         max_inflight,
@@ -242,7 +248,9 @@ pub fn serve(app: Arc<App>, listen: &str, max_inflight: usize) -> Result<()> {
             }
         };
         failures = 0;
+        health.waiting(true);
         let slot = slots.acquire();
+        health.waiting(false);
         let app = app.clone();
         // Handlers block on I/O rather than recurse, so they need far less
         // than the 8 MiB default a full cap would reserve.

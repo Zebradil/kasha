@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime};
 
 use crate::manifest::Manifest;
@@ -24,6 +24,31 @@ pub struct Store {
     pub root: PathBuf,
     /// storehash -> nar URL (relative key like `nar/<filehash>.nar.xz`).
     index: RwLock<HashMap<String, String>>,
+}
+
+/// How far the boot scan got, for the probe listener to report.
+#[derive(Default)]
+pub struct ScanProgress {
+    done: AtomicUsize,
+    total: AtomicUsize,
+}
+
+impl ScanProgress {
+    pub fn start(&self, total: usize) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    pub fn advance(&self) {
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// (narinfos read, narinfos found).
+    pub fn get(&self) -> (usize, usize) {
+        (
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// What `Store::publish_pulled` did with a pulled-through path.
@@ -48,6 +73,10 @@ fn safe_component(s: &str) -> Result<&str> {
 
 impl Store {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
+        Self::open_reporting(root, &ScanProgress::default())
+    }
+
+    pub fn open_reporting(root: impl Into<PathBuf>, progress: &ScanProgress) -> Result<Self> {
         let root = root.into();
         for d in ["nar", "roots", "state/local-origin", "state/mirrored"] {
             fs::create_dir_all(root.join(d))?;
@@ -56,14 +85,14 @@ impl Store {
             root,
             index: RwLock::new(HashMap::new()),
         };
-        store.scan()?;
+        store.scan(progress)?;
         Ok(store)
     }
 
     /// Rebuild the index from `*.narinfo` files. Filename is authoritative for
     /// the hash; only the URL field is read (no signature re-check: ingest
     /// already verified, and boot must stay fast).
-    fn scan(&self) -> Result<()> {
+    fn scan(&self, progress: &ScanProgress) -> Result<()> {
         let started = Instant::now();
         let mut hashes = Vec::new();
         for entry in fs::read_dir(&self.root)? {
@@ -82,11 +111,12 @@ impl Store {
             narinfos = hashes.len(),
             "indexing store"
         );
+        progress.start(hashes.len());
         let per_thread = hashes.len().div_ceil(SCAN_THREADS).max(1);
         let parts = std::thread::scope(|s| {
             let workers: Vec<_> = hashes
                 .chunks(per_thread)
-                .map(|chunk| s.spawn(move || self.scan_chunk(chunk)))
+                .map(|chunk| s.spawn(move || self.scan_chunk(chunk, progress)))
                 .collect();
             workers
                 .into_iter()
@@ -103,10 +133,15 @@ impl Store {
         Ok(())
     }
 
-    fn scan_chunk(&self, hashes: &[String]) -> Result<Vec<(String, String)>> {
+    fn scan_chunk(
+        &self,
+        hashes: &[String],
+        progress: &ScanProgress,
+    ) -> Result<Vec<(String, String)>> {
         let mut out = Vec::with_capacity(hashes.len());
         for hash in hashes {
             let text = fs::read_to_string(self.root.join(format!("{hash}.narinfo")))?;
+            progress.advance();
             match NarInfo::parse(&text) {
                 Ok(n) => out.push((hash.clone(), n.url)),
                 Err(e) => tracing::warn!(hash, error = %e, "skipping unparseable narinfo"),
@@ -856,7 +891,9 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         }
         fs::write(root.join("bad.narinfo"), "garbage").unwrap();
         fs::write(root.join(".tmp.narinfo"), REAL).unwrap();
-        let s = Store::open(&root).unwrap();
+        let progress = ScanProgress::default();
+        let s = Store::open_reporting(&root, &progress).unwrap();
+        assert_eq!(progress.get(), (n + 1, n + 1));
         assert_eq!(s.len(), n);
         assert!(s.has(&format!("{:032}", n - 1)));
         assert!(!s.has("bad"));

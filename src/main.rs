@@ -2,6 +2,7 @@ mod gc;
 mod manifest;
 mod mirror;
 mod narinfo;
+mod probe;
 mod pull;
 mod reencode;
 mod remote;
@@ -38,6 +39,11 @@ enum Cmd {
         /// Listen address for the cache HTTP server.
         #[arg(long, env = "KASHA_LISTEN", default_value = "0.0.0.0:5000")]
         listen: String,
+        /// Listen address for /livez and /readyz, answered from their own
+        /// thread: during the boot scan and while every request slot is held.
+        /// Unset, no probe listener runs.
+        #[arg(long, env = "KASHA_PROBE_LISTEN")]
+        probe_listen: Option<String>,
         /// Write token; writes are refused when unset.
         #[arg(long, env = "KASHA_TOKEN", hide_env_values = true)]
         token: Option<String>,
@@ -277,6 +283,7 @@ fn main() -> Result<()> {
         Cmd::Serve {
             data,
             listen,
+            probe_listen,
             token,
             trusted_keys,
             remote,
@@ -295,7 +302,11 @@ fn main() -> Result<()> {
             reencode,
         } => {
             tracing::info!(version = env!("CARGO_PKG_VERSION"), data, "kasha starting");
-            let store = Arc::new(store::Store::open(&data)?);
+            let health = Arc::new(probe::Health::default());
+            if let Some(probe_listen) = &probe_listen {
+                probe::spawn(probe_listen, health.clone())?;
+            }
+            let store = Arc::new(store::Store::open_reporting(&data, &health.scan)?);
             let stale = store.clean_temps();
             if stale > 0 {
                 tracing::info!(stale, "removed temp files of an interrupted run");
@@ -374,7 +385,7 @@ fn main() -> Result<()> {
                 tracing::warn!("KASHA_HTTP_THREADS is retired, use KASHA_MAX_INFLIGHT");
             }
 
-            server::serve(app, &listen, max_inflight as usize)
+            server::serve(app, &listen, max_inflight as usize, &health)
         }
 
         Cmd::Emit {

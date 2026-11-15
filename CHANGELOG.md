@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.10.0](https://github.com/Zebradil/kasha/compare/v0.9.0...v0.10.0) (2026-11-15)
+
+
+### Features
+
+* evict unlisted paths least recently used first under a size cap (ADR-0013) ([#117](https://github.com/Zebradil/kasha/issues/117)) ([75bbeec](https://github.com/Zebradil/kasha/commit/75bbeec11dada1e0573fdf1b6b67de95df2a8b2a))
+* pull-through on a narinfo miss (ADR-0011) ([#114](https://github.com/Zebradil/kasha/issues/114)) ([d25f586](https://github.com/Zebradil/kasha/commit/d25f58678995497414aa44e23f5999193d8be609))
+* **pull:** store pulled-through NARs as zstd (ADR-0012) ([#115](https://github.com/Zebradil/kasha/issues/115)) ([b6e2431](https://github.com/Zebradil/kasha/commit/b6e2431837576ab8476a2ef97104952c961ef2a5))
+
+
+### Fixes
+
+* **deps:** update rust crate rusty-s3 to 0.11.0 ([#98](https://github.com/Zebradil/kasha/issues/98)) ([38a7a19](https://github.com/Zebradil/kasha/commit/38a7a19a63d97664341450c30138dbe6e8aef2d9))
+* **remote:** accept ListBucketResult in GCS's XML namespace ([#112](https://github.com/Zebradil/kasha/issues/112)) ([7386ea3](https://github.com/Zebradil/kasha/commit/7386ea3a22f098691bb4c6fad90eecd50223674b))
+
+
+### Documentation
+
+* **adr:** record optional pull-through mode (ADR-0011) ([#111](https://github.com/Zebradil/kasha/issues/111)) ([dee29c5](https://github.com/Zebradil/kasha/commit/dee29c5e2eb48ec56b0d713b56b161c9a45579da))
+* **agents:** add deferred triage label ([8350f00](https://github.com/Zebradil/kasha/commit/8350f002a698811a3e469e76f6ef673f75c4594c))
+* **agents:** refresh skill config, rename CONTEXT.md to GLOSSARY.md ([56e98db](https://github.com/Zebradil/kasha/commit/56e98db27c51be1df3e2f268abed5f54bcf1445c))
+* count docs site visitors with Umami ([#103](https://github.com/Zebradil/kasha/issues/103)) ([7a4548e](https://github.com/Zebradil/kasha/commit/7a4548e400ad9f31c5cbf7ab2d140620b485fdd8))
+* install docs-kit from npm ([#106](https://github.com/Zebradil/kasha/issues/106)) ([0ba6c93](https://github.com/Zebradil/kasha/commit/0ba6c93ff3b98c25c6383671a884f0b9ff19514e))
+* publish docs of past releases with docs-kit 0.11.0 ([#113](https://github.com/Zebradil/kasha/issues/113)) ([3f7ba96](https://github.com/Zebradil/kasha/commit/3f7ba96d070336c26ef1e86d8673adf58cb75997))
+
 ## [0.9.0](https://github.com/Zebradil/kasha/compare/v0.8.0...v0.9.0) (2026-10-09)
 
 

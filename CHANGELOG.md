@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.2](https://github.com/Zebradil/kasha/compare/v0.12.1...v0.12.2) (2026-11-15)
+
+
+### Fixes
+
+* **grafana:** cap the failure-ratio axis at 100 % ([71b5935](https://github.com/Zebradil/kasha/commit/71b59350fede64db16ae9dea7211e7a82504a730))
+
+
+### Documentation
+
+* push to the box with zstd, not Nix's xz default ([#125](https://github.com/Zebradil/kasha/issues/125)) ([d31de25](https://github.com/Zebradil/kasha/commit/d31de2579cb0dfe1f6fde30b417be04744983c1f))
+
 ## [0.12.1](https://github.com/Zebradil/kasha/compare/v0.12.0...v0.12.1) (2026-11-15)
 
 

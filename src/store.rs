@@ -184,19 +184,46 @@ impl Store {
         raw: &[u8],
         nar_tmp: Option<&Path>,
     ) -> Result<Published> {
+        self.publish(info, raw, nar_tmp, None)
+    }
+
+    /// Store a re-encoded path as `publish_pulled` does, except that its
+    /// narinfo replaces the stored one, and only while that still reads
+    /// `old`: a narinfo written since the caller read it wins (`Lost`). The
+    /// NAR this call creates and the narinfo get mtime `used`, so the path
+    /// keeps its last use; a reused NAR is touched as by every writer, since
+    /// eviction may be about to remove it for another path that names it.
+    pub fn publish_reencoded(
+        &self,
+        info: &NarInfo,
+        raw: &[u8],
+        old: &[u8],
+        nar_tmp: Option<&Path>,
+        used: SystemTime,
+    ) -> Result<Published> {
+        self.publish(info, raw, nar_tmp, Some((old, used)))
+    }
+
+    fn publish(
+        &self,
+        info: &NarInfo,
+        raw: &[u8],
+        nar_tmp: Option<&Path>,
+        replace: Option<(&[u8], SystemTime)>,
+    ) -> Result<Published> {
         let narinfo = self.narinfo_path(info.store_hash())?;
         let file = info.url.strip_prefix("nar/").context("nar URL")?;
         let nar = self.nar_path(file)?;
         let narinfo_tmp = write_temp(&narinfo, |f| f.write_all(raw))?;
-        let published = self.publish_locked(info, &narinfo, &narinfo_tmp, &nar, nar_tmp);
+        let published = self.publish_locked(info, &narinfo, &narinfo_tmp, &nar, nar_tmp, replace);
         if !matches!(published, Ok(Published::Stored)) {
             let _ = fs::remove_file(&narinfo_tmp);
         }
         published
     }
 
-    /// The part of `publish_pulled` that needs the index lock: checks,
-    /// renames and the index update, no file contents.
+    /// The part of `publish` that needs the index lock: checks, renames,
+    /// times and the index update, no file contents.
     fn publish_locked(
         &self,
         info: &NarInfo,
@@ -204,11 +231,16 @@ impl Store {
         narinfo_tmp: &Path,
         nar: &Path,
         nar_tmp: Option<&Path>,
+        replace: Option<(&[u8], SystemTime)>,
     ) -> Result<Published> {
         // Every narinfo writer takes this lock, so the check below holds
         // until this narinfo is in place.
         let mut idx = self.index.write().unwrap();
-        if narinfo.exists() {
+        let lost = match replace {
+            None => narinfo.exists(),
+            Some((old, _)) => fs::read(narinfo).map_or(true, |stored| stored != old),
+        };
+        if lost {
             return Ok(Published::Lost);
         }
         match nar_tmp {
@@ -216,6 +248,14 @@ impl Store {
             Some(tmp) => match fs::hard_link(tmp, nar) {
                 Ok(()) => {
                     let _ = fs::remove_file(tmp);
+                    // Set under the lock: no sweep or eviction judges the
+                    // file by this time before its narinfo is in place.
+                    if let Some((_, used)) = replace
+                        && let Err(e) = set_mtime(nar, used)
+                    {
+                        let _ = fs::remove_file(nar);
+                        return Err(e).with_context(|| format!("dating {}", nar.display()));
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     return Ok(Published::NarExists);
@@ -242,6 +282,11 @@ impl Store {
             return Err(e).with_context(|| format!("writing {}", narinfo.display()));
         }
         idx.insert(info.store_hash().to_string(), info.url.clone());
+        // On the narinfo in place, not its temp file: `clean_temps` takes a
+        // temp file this old for abandoned.
+        if let Some((_, used)) = replace {
+            set_mtime(narinfo, used).with_context(|| format!("dating {}", narinfo.display()))?;
+        }
         Ok(Published::Stored)
     }
 
@@ -460,6 +505,15 @@ impl Store {
         before - idx.len()
     }
 
+    /// Store hashes whose indexed nar URL passes `keep`.
+    pub fn hashes_by_url(&self, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        let idx = self.index.read().unwrap();
+        idx.iter()
+            .filter(|(_, url)| keep(url))
+            .map(|(hash, _)| hash.clone())
+            .collect()
+    }
+
     /// Indexed nar URL for a store hash.
     pub fn url_of(&self, store_hash: &str) -> Option<String> {
         self.index.read().unwrap().get(store_hash).cloned()
@@ -585,9 +639,13 @@ const TEMP_PREFIX: &str = ".tmp-";
 /// less than this (`KASHA_PULL_THROUGH_STALL_TIMEOUT`).
 pub const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// Read-only: the owner may set times on a file it cannot open for writing.
 fn touch(path: &Path) -> std::io::Result<()> {
-    fs::File::open(path)?.set_modified(SystemTime::now())
+    set_mtime(path, SystemTime::now())
+}
+
+/// Read-only: the owner may set times on a file it cannot open for writing.
+fn set_mtime(path: &Path, t: SystemTime) -> std::io::Result<()> {
+    fs::File::open(path)?.set_modified(t)
 }
 
 /// The resolution of recorded use: a read rewrites an mtime only when it is

@@ -190,7 +190,7 @@ impl Drop for LookupGuard<'_> {
 }
 
 /// Removes a download that did not make it into the store.
-struct TempFile(PathBuf);
+pub(crate) struct TempFile(pub(crate) PathBuf);
 
 impl Drop for TempFile {
     fn drop(&mut self) {
@@ -623,18 +623,18 @@ impl Pull {
 }
 
 /// Hash and size of a NAR file as stored, compressed.
-struct FileMeta {
-    hash: [u8; 32],
-    size: u64,
+pub(crate) struct FileMeta {
+    pub(crate) hash: [u8; 32],
+    pub(crate) size: u64,
 }
 
 /// A `Compression` the box can decode, hence verify.
-fn decodable(compression: &str) -> bool {
+pub(crate) fn decodable(compression: &str) -> bool {
     matches!(compression, "none" | "xz" | "zstd" | "bzip2")
 }
 
 /// The encoding of every NAR pull-through stores (ADR-0012).
-const STORED: &str = "zstd";
+pub(crate) const STORED: &str = "zstd";
 
 /// Decoding takes as long at every zstd level; level 3 encodes about 2.5
 /// times faster than 6 for a 5% larger file, and a client may be waiting
@@ -664,7 +664,7 @@ fn decoder<'a>(compression: &str, r: impl Read + 'a) -> Result<Box<dyn Read + 'a
 /// `URL` and `Compression` written by the box and `FileHash`/`FileSize`
 /// dropped, or set to the stored file's once there is one. Signatures stay
 /// valid: they cover none of these fields.
-fn render(raw: &str, file: &str, stored: Option<&FileMeta>) -> String {
+pub(crate) fn render(raw: &str, file: &str, stored: Option<&FileMeta>) -> String {
     let mut out = String::with_capacity(raw.len() + 128);
     for line in raw.lines() {
         match line.split_once(": ").map(|(key, _)| key) {
@@ -700,7 +700,7 @@ const ENCODING_SLACK: u64 = 1024 * 1024;
 /// there: the body itself if it is already zstd, else the NAR encoded as
 /// zstd. Returns that file's hash and size, or the body's without `out`,
 /// and the number of bytes read from `body`.
-fn verify(
+pub(crate) fn verify(
     body: impl Read,
     out: Option<&mut File>,
     compression: &str,
@@ -1078,6 +1078,7 @@ Deriver: {hash}-pkg-{c}.drv\n",
                 priority,
                 pull,
                 lru: None,
+                reencode: None,
             });
             let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
             let base = format!("http://{}", server.server_addr().to_ip().unwrap());

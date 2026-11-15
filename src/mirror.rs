@@ -35,6 +35,8 @@ pub struct Mirror<'a> {
     /// rather than once per manifest per cycle. Keep one `Mirror` across cycles.
     pub misses: RefCell<HashMap<String, Instant>>,
     pub counters: &'a Counters,
+    /// Re-encodes a path before mirror-up uploads it; None when off.
+    pub reencode: Option<&'a crate::reencode::Reencoder>,
 }
 
 const MISS_RETRY: Duration = Duration::from_secs(3600);
@@ -254,6 +256,12 @@ impl Mirror<'_> {
             if self.remote.exists(&key)? {
                 continue;
             }
+            // The remote cache gets zstd, or every box that mirrors the path
+            // down re-encodes it again. A path it cannot re-encode goes up
+            // as it is.
+            if let Some(r) = self.reencode {
+                r.path(self.store, hash, true);
+            }
             let raw = self
                 .store
                 .read_narinfo(hash)?
@@ -396,6 +404,7 @@ References: \n"
             agent: ureq::Agent::new_with_defaults(),
             misses: Default::default(),
             counters: Box::leak(Box::default()),
+            reencode: None,
         }
     }
 
@@ -632,6 +641,7 @@ References: \n"
             priority: 10,
             pull: None,
             lru: None,
+            reencode: None,
         });
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr().to_ip().unwrap());
@@ -653,6 +663,7 @@ References: \n"
             agent: ureq::Agent::new_with_defaults(),
             misses: Default::default(),
             counters: Box::leak(Box::default()),
+            reencode: None,
         };
         let report = m.down().unwrap();
         assert_eq!(report.fetched_paths, 1);

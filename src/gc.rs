@@ -67,7 +67,7 @@ pub fn box_sweep(
 
 /// Store hashes the retained manifests list, with the number of those
 /// manifests; `None` when the store has no manifest at all.
-fn marked(store: &Store, now: SystemTime) -> Result<Option<(usize, HashSet<String>)>> {
+pub(crate) fn marked(store: &Store, now: SystemTime) -> Result<Option<(usize, HashSet<String>)>> {
     // Two passes so only one closure is in memory at a time: retention needs
     // every manifest's header, marking only the retained closures.
     let files = store.manifest_files()?;
@@ -398,6 +398,7 @@ pub fn maintain(app: &App, poll: Duration) {
         pulled + app.counters.bytes_ingested.load(Ordering::Relaxed)
     };
     let busy = |file: &str| app.pull.as_ref().is_some_and(|p| p.busy(file));
+    let mut reencoded: Option<Instant> = None;
     loop {
         std::thread::sleep(poll);
         // What a crash shortly before the last start left behind was too
@@ -408,6 +409,14 @@ pub fn maintain(app: &App, poll: Duration) {
                 tracing::info!(stale, "removed abandoned temp files");
             }
             cleaned = Instant::now();
+        }
+        if let Some(r) = &app.reencode
+            && reencoded.is_none_or(|t| t.elapsed() >= PASS_EVERY)
+        {
+            if let Err(e) = r.pass(&app.store, crate::reencode::BUDGET) {
+                tracing::warn!(error = format!("{e:#}"), "re-encode pass failed");
+            }
+            reencoded = Some(Instant::now());
         }
         let Some(lru) = &app.lru else { continue };
         let now_received = received();
@@ -1136,6 +1145,7 @@ References: \n"
             priority: 10,
             pull: None,
             lru,
+            reencode: None,
         })
     }
 
@@ -1417,6 +1427,57 @@ References: \n"
             assert!(dangling(&store).is_empty(), "{writer}");
             let _ = std::fs::remove_dir_all(&store.root);
         }
+    }
+
+    #[test]
+    fn a_re_encoded_narinfo_keeps_its_nar_when_the_swap_cuts_into_a_pass() {
+        use crate::reencode::{Reencoder, tests as re};
+        let now = SystemTime::now();
+        let zstd_of = |p: &re::Stored| zstd::encode_all(&p.nar[..], 19).unwrap();
+
+        // `a` used five minutes ago, re-encoded after the pass listed the
+        // store, to a zstd file the older `b` names. Evicting `b` would take
+        // that file unless the re-encoder made it recent, which keeps `b` too.
+        let store = Store::open(re::tmp()).unwrap();
+        let a = re::put(&store, 'a', "xz", now - RECENT / 2);
+        let (hb, ib, _) = object('b', "pkg-b");
+        let ib = ib.replace(&format!("nar/{hb}.nar.xz"), &format!("nar/{}", a.zst));
+        put_path(&store, &ib, &zstd_of(&a), now - DAY * 2);
+        let r = Reencoder::default();
+        let report = evict_with(&store, now, &Lru::new(1), &|_| false, || {
+            r.path(&store, &a.hash, false);
+        })
+        .unwrap();
+        assert!(report.evicted.is_empty(), "evicted {:?}", report.evicted);
+        assert!(store.has(&hb));
+        assert_eq!(store.url_of(&a.hash), Some(format!("nar/{}", a.zst)));
+        assert!(dangling(&store).is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
+
+        // A listed path re-encoded after a sweep listed the store, to a zstd
+        // file no narinfo named, past grace, which the sweep would remove.
+        let store = Store::open(re::tmp()).unwrap();
+        let a = re::put(&store, 'a', "xz", now - DAY * 30);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{}-pkg-a", a.hash)],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+        store.put_nar(&a.zst, &zstd_of(&a)[..]).unwrap();
+        age(&store.nar_path(&a.zst).unwrap(), now - 2 * GRACE);
+        let r = Reencoder::default();
+        let report = sweep(&store, now, GRACE, false, || {
+            r.path(&store, &a.hash, true);
+        })
+        .unwrap();
+        assert!(report.deleted.is_empty(), "deleted {:?}", report.deleted);
+        assert_eq!(store.url_of(&a.hash), Some(format!("nar/{}", a.zst)));
+        assert!(dangling(&store).is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
     }
 
     #[test]

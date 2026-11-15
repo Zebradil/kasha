@@ -155,6 +155,8 @@ pub struct App {
     pub pull: Option<Arc<Pull>>,
     /// The cap on unlisted paths; None when unset.
     pub lru: Option<Lru>,
+    /// Re-encoding stored NARs as zstd (ADR-0015); None when off.
+    pub reencode: Option<crate::reencode::Reencoder>,
 }
 
 impl App {
@@ -709,6 +711,37 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         writeln!(o, "kasha_pull_through_queued {queued}")?;
     }
 
+    if let Some(r) = &app.reencode {
+        let s = &r.stats;
+        head(
+            o,
+            "kasha_reencode_paths_total",
+            "counter",
+            "Paths whose NAR the re-encoder took on, by result (reencoded: stored as zstd and the narinfo swapped, failed: the NAR failed its check or cannot be decoded, not tried again until restart, lost: the narinfo changed meanwhile, error: a store error, tried again).",
+        )?;
+        for (result, v) in [
+            ("reencoded", &s.reencoded),
+            ("failed", &s.failed),
+            ("lost", &s.lost),
+            ("error", &s.errors),
+        ] {
+            writeln!(
+                o,
+                "kasha_reencode_paths_total{{result=\"{result}\"}} {}",
+                n(v)
+            )?;
+        }
+        head(
+            o,
+            "kasha_reencode_bytes_total",
+            "counter",
+            "Bytes of re-encoded NAR files (old: the file as stored before, new: the zstd file the narinfo names now).",
+        )?;
+        for (file, v) in [("old", &s.bytes_old), ("new", &s.bytes_new)] {
+            writeln!(o, "kasha_reencode_bytes_total{{file=\"{file}\"}} {}", n(v))?;
+        }
+    }
+
     head(
         o,
         "kasha_nar_stored_total",
@@ -945,6 +978,7 @@ References: \n";
             priority: 10,
             pull: None,
             lru: None,
+            reencode: None,
         });
         let base = spawn(app.clone());
         let agent = ureq::Agent::new_with_defaults();

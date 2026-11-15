@@ -3,6 +3,7 @@ mod manifest;
 mod mirror;
 mod narinfo;
 mod pull;
+mod reencode;
 mod remote;
 mod retention;
 mod server;
@@ -128,6 +129,14 @@ enum Cmd {
             value_parser = clap::value_parser!(u64).range(1..store::TEMP_MAX_AGE.as_secs())
         )]
         pull_through_stall_timeout_secs: u64,
+        /// Re-encode stored xz, bzip2 and uncompressed NARs as zstd in the
+        /// background, and before mirror-up uploads them (ADR-0015).
+        #[arg(
+            long,
+            env = "KASHA_REENCODE",
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
+        reencode: bool,
     },
     /// Emit a v3 generation manifest (closure store paths on stdin).
     Emit {
@@ -283,6 +292,7 @@ fn main() -> Result<()> {
             pull_through_max_pending,
             pull_through_lookup_timeout_secs,
             pull_through_stall_timeout_secs,
+            reencode,
         } => {
             let store = Arc::new(store::Store::open(&data)?);
             let stale = store.clean_temps();
@@ -335,6 +345,7 @@ fn main() -> Result<()> {
                 priority,
                 pull,
                 lru: unlisted_max_bytes.map(gc::Lru::new),
+                reencode: reencode.then(reencode::Reencoder::default),
             });
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
@@ -342,6 +353,9 @@ fn main() -> Result<()> {
 
             if let Some(max_bytes) = unlisted_max_bytes {
                 tracing::info!(max_bytes, "unlisted paths capped");
+            }
+            if reencode {
+                tracing::info!("re-encoding stored NARs as zstd");
             }
             let maintain_app = app.clone();
             std::thread::spawn(move || gc::maintain(&maintain_app, gc::POLL));
@@ -541,6 +555,7 @@ fn sync_loop(
         agent: ureq::Agent::new_with_defaults(),
         misses: Default::default(),
         counters: &app.counters,
+        reencode: app.reencode.as_ref(),
     };
     let mut seen_sweep = app.store.last_sweep();
     loop {

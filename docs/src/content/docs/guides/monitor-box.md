@@ -41,6 +41,7 @@ needs no authentication.
 | `kasha_ingest_requests_total{result}` | counter | pushes, `result` is `accepted`, `rejected` (bad content or signature) or `unauthorized` |
 | `kasha_last_sweep_timestamp_seconds` | gauge | start of the last box GC sweep attempt; absent until the first sweep |
 | `kasha_sweep_deleted_objects_total` | counter | narinfos and NARs the box GC deleted |
+| `kasha_unlisted_max_bytes` | gauge | the cap, `KASHA_UNLISTED_MAX_BYTES` |
 | `kasha_unlisted_bytes` | gauge | bytes of paths no retained manifest lists (their narinfos, and NARs only they name) after the last eviction pass |
 | `kasha_unlisted_paths` | gauge | number of those paths after the last eviction pass |
 | `kasha_unlisted_evictions_total` | counter | paths eviction removed |

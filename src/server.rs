@@ -544,6 +544,13 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
     )?;
 
     if let Some(lru) = &app.lru {
+        head(
+            o,
+            "kasha_unlisted_max_bytes",
+            "gauge",
+            "The cap on unlisted paths (KASHA_UNLISTED_MAX_BYTES).",
+        )?;
+        writeln!(o, "kasha_unlisted_max_bytes {}", lru.max_bytes)?;
         for (name, kind, help, v) in [
             (
                 "kasha_unlisted_bytes",

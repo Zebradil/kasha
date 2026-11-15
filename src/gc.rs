@@ -1505,6 +1505,7 @@ References: \n"
             .read_to_string()
             .unwrap();
         for line in [
+            "kasha_unlisted_max_bytes 1".to_string(),
             "# TYPE kasha_unlisted_bytes gauge".to_string(),
             format!("kasha_unlisted_bytes {size}"),
             "kasha_unlisted_paths 1".to_string(),

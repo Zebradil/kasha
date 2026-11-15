@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.13.0](https://github.com/Zebradil/kasha/compare/v0.12.2...v0.13.0) (2026-11-15)
+
+
+### Features
+
+* **metrics:** count NARs by encoding on disk and by arrival route ([1f6ff68](https://github.com/Zebradil/kasha/commit/1f6ff68e26b71ec2eaf1b67655954f17aa0ca4bd))
+* **reencode:** re-encode stored non-zstd NARs as zstd ([5bee1fe](https://github.com/Zebradil/kasha/commit/5bee1feff6cfdb5fc722e332fcaf1f4c43ac5328)), closes [#126](https://github.com/Zebradil/kasha/issues/126)
+
+
+### Fixes
+
+* **ci:** run the NixOS VM test on x86_64-linux only ([#131](https://github.com/Zebradil/kasha/issues/131)) ([ef17288](https://github.com/Zebradil/kasha/commit/ef17288da455d1d61a1fa30118e30b7c19250a63))
+* **reencode:** keep the old NAR a full grace window after the swap ([36de7e1](https://github.com/Zebradil/kasha/commit/36de7e1a6d0f50674b9d713e318888b411418e1a)), closes [#126](https://github.com/Zebradil/kasha/issues/126)
+
+
+### Documentation
+
+* record the re-encoder in ADR-0015 and the user docs ([62c2a94](https://github.com/Zebradil/kasha/commit/62c2a9472cd5399ec37af99e6179b478064cc872)), closes [#126](https://github.com/Zebradil/kasha/issues/126)
+
 ## [0.12.2](https://github.com/Zebradil/kasha/compare/v0.12.1...v0.12.2) (2026-11-15)
 
 

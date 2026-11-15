@@ -179,6 +179,20 @@
             cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
           };
 
+          # CI pushes only the output closures of these checks, and the dependency
+          # builds are build-time inputs of them, so without this they never reach
+          # the cache and every version bump recompiles them. Referencing them from
+          # an output puts them in a pushed closure.
+          build-inputs = pkgs.linkFarm "kasha-build-inputs" (
+            {
+              deps = cargoArtifacts;
+              crane-utils = craneLib.craneUtils;
+            }
+            // lib.optionalAttrs (lib.hasSuffix "linux" system) {
+              deps-static = (mkCrane pkgs.pkgsStatic).cargoArtifacts;
+            }
+          );
+
           actionlint =
             pkgs.runCommand "actionlint"
               {

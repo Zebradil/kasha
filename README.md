@@ -140,7 +140,7 @@ Sign locally, then plain `nix copy` with netrc auth (any login, password = `KASH
 ```sh
 echo 'machine box.lan login nix password <token>' > ~/.config/nix/netrc
 nix store sign --key-file ./secret-key --recursive ./result
-nix copy --to 'http://box.lan:5000' ./result
+nix copy --to 'http://box.lan:5000?compression=zstd' ./result
 ```
 
 Publish a manifest for it through the same authed API so mirror-up picks it up:

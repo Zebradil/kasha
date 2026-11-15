@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/Zebradil/kasha/compare/v0.11.0...v0.12.0) (2026-11-15)
+
+
+### Features
+
+* **grafana:** dashboard for several boxes, pull-through and the cap ([d7af35b](https://github.com/Zebradil/kasha/commit/d7af35b1cac8c422752e620df433638d8e424727))
+* **metrics:** export the unlisted cap as kasha_unlisted_max_bytes ([db128af](https://github.com/Zebradil/kasha/commit/db128afd25ad46c8a7509665239f6d589d218fb1))
+
 ## [0.11.0](https://github.com/Zebradil/kasha/compare/v0.10.0...v0.11.0) (2026-11-15)
 
 

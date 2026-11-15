@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.14.0](https://github.com/Zebradil/kasha/compare/v0.13.0...v0.14.0) (2026-11-15)
+
+
+### Features
+
+* **serve:** answer health probes on a listener of their own ([d2ef41b](https://github.com/Zebradil/kasha/commit/d2ef41b5a881a99ac2ffccd5a82d6e1bf881659b))
+
+
+### Fixes
+
+* **deps:** update dependency @zebradil/docs-kit to v0.11.1 ([#134](https://github.com/Zebradil/kasha/issues/134)) ([b0f5ce9](https://github.com/Zebradil/kasha/commit/b0f5ce91111d8c96ecdcf8a376ce8181d242bc77))
+* **mirror:** fill gaps only in box-retained generations ([#136](https://github.com/Zebradil/kasha/issues/136)) ([7c09f3f](https://github.com/Zebradil/kasha/commit/7c09f3fdf8716af5aad440bdb7b0a8f8be4720eb))
+
+
+### Performance
+
+* **store:** read narinfos in parallel at boot ([473d949](https://github.com/Zebradil/kasha/commit/473d949b553a9a12372dffed231b46da91a6f512))
+
 ## [0.13.0](https://github.com/Zebradil/kasha/compare/v0.12.2...v0.13.0) (2026-11-15)
 
 

@@ -67,7 +67,7 @@ The branch `main` has its own tier:
 | every other branch | `--other-keep`, `--other-age-weeks` | `N=1`, `M=1` |
 
 `--stale-weeks` (default `4`, `0` disables) retires a group whose newest generation trails the newest of its flake's
-tier by that long; the `N` rule stops applying to it. See [Retention and GC](../../concepts/retention/).
+tier by that long; the `N` rule stops applying to it. A release-tag group (`v1.2.3`) never goes stale. See [Retention and GC](../../concepts/retention/).
 
 `--grace-hours` sets the grace window. The box's own sweep keeps a subset of this (see
 [Retention and GC](../../concepts/retention/)), so shrinking the remote policy also shrinks what boxes keep once they

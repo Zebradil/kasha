@@ -1,5 +1,8 @@
 # Count retention lapses for stale groups, measured against the flake's own tier
 
+**Partly superseded by [ADR-0014](0014-release-tags-never-go-stale.md)** — a release-tag
+group never goes stale, so pinned releases keep hitting the cache.
+
 ADR-0008 retains a generation when it is among the `N` newest of its
 `(flake, branch, attr)` group or younger than `M`. The count rule has no end: once a
 group stops receiving generations, its last `N` stay forever, each pinning a full

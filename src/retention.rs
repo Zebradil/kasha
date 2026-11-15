@@ -4,6 +4,7 @@
 //! than N newer generations in its (flake, branch, attr) group, OR it is
 //! younger than M. Count retention lapses once the group is stale: its newest
 //! generation trails the newest of its flake's tier (main or other) by S.
+//! A release-tag group never goes stale (ADR-0014).
 //! Box marking uses counts only (M = S = zero).
 
 use std::collections::{HashMap, HashSet};
@@ -109,7 +110,8 @@ pub fn verdicts(gens: &[Gen], policy: &Policy, now: SystemTime) -> Vec<Verdict> 
         let lead = tier_newest[&(flake, branch == "main")]
             .duration_since(newest)
             .unwrap_or(Duration::ZERO);
-        let stale = !policy.stale_after.is_zero() && lead >= policy.stale_after;
+        let stale =
+            !policy.stale_after.is_zero() && lead >= policy.stale_after && !is_release_tag(branch);
         for (idx, &i) in group.iter().enumerate() {
             let age = now.duration_since(gens[i].time).unwrap_or(Duration::ZERO);
             out[i] = if age < p.max_age {
@@ -124,6 +126,26 @@ pub fn verdicts(gens: &[Gen], policy: &Policy, now: SystemTime) -> Vec<Verdict> 
         }
     }
     out
+}
+
+/// A branch named for a release tag: `v1.2.3`, optionally with a suffix
+/// (`v1.2.3-rc.1`; emitters sanitize `+` to `-`, so build metadata is one too).
+/// Consumers pin releases by commit, so their closures must outlive the flake's
+/// later releases and pull requests.
+pub fn is_release_tag(branch: &str) -> bool {
+    let Some(rest) = branch.strip_prefix('v') else {
+        return false;
+    };
+    let core = match rest.split_once('-') {
+        Some((core, suffix)) if !suffix.is_empty() => core,
+        Some(_) => return false,
+        None => rest,
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Ids of the generations to retain.
@@ -208,7 +230,8 @@ mod tests {
             mk("live", "main", "a", 0, now),
             mk("renamed", "main", "gone", 40, now), // trails main by 40d
             mk("pr", "pr", "a", 0, now),
-            mk("tag", "v0.1.0", "a", 40, now), // trails the other tier by 40d
+            mk("dirty", "main-dirty", "a", 40, now), // trails the other tier by 40d
+            mk("tag", "v0.1.0", "a", 400, now),      // so does a release tag
         ];
         let v = verdicts(&gens, &Policy::remote(), now);
         assert_eq!(
@@ -217,9 +240,30 @@ mod tests {
                 Verdict::KeepAge,
                 Verdict::DropStale,
                 Verdict::KeepAge,
-                Verdict::DropStale
+                Verdict::DropStale,
+                Verdict::KeepCount
             ]
         );
+    }
+
+    #[test]
+    fn release_tags_are_v_semver_with_optional_suffix() {
+        for b in ["v0.9.0", "v10.20.30", "v1.0.0-rc.1", "v1.2.3-build-5"] {
+            assert!(is_release_tag(b), "{b}");
+        }
+        for b in [
+            "main",
+            "pr",
+            "0.9.0",
+            "v1.2",
+            "v1.2.3.4",
+            "v1..3",
+            "v1.2.3-",
+            "va.b.c",
+            "fix-v1.2.3",
+        ] {
+            assert!(!is_release_tag(b), "{b}");
+        }
     }
 
     #[test]

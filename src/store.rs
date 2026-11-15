@@ -10,10 +10,15 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::manifest::Manifest;
 use crate::narinfo::NarInfo;
+
+/// Readers of narinfos at boot. The scan waits on storage, not CPU: on a
+/// network block device with a cold page cache every file costs a round trip
+/// (~1.5 ms on iSCSI), so overlapping reads beyond the core count pays off.
+const SCAN_THREADS: usize = 16;
 
 pub struct Store {
     pub root: PathBuf,
@@ -59,28 +64,55 @@ impl Store {
     /// the hash; only the URL field is read (no signature re-check: ingest
     /// already verified, and boot must stay fast).
     fn scan(&self) -> Result<()> {
-        let mut idx = HashMap::new();
+        let started = Instant::now();
+        let mut hashes = Vec::new();
         for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let name = entry.file_name();
+            let name = entry?.file_name();
             // Dot-files are `write_atomic` temps, not narinfos.
-            let Some(hash) = name
+            if let Some(hash) = name
                 .to_str()
                 .filter(|n| !n.starts_with('.'))
                 .and_then(|n| n.strip_suffix(".narinfo"))
-            else {
-                continue;
-            };
-            let text = fs::read_to_string(entry.path())?;
+            {
+                hashes.push(hash.to_string());
+            }
+        }
+        tracing::info!(
+            root = %self.root.display(),
+            narinfos = hashes.len(),
+            "indexing store"
+        );
+        let per_thread = hashes.len().div_ceil(SCAN_THREADS).max(1);
+        let parts = std::thread::scope(|s| {
+            let workers: Vec<_> = hashes
+                .chunks(per_thread)
+                .map(|chunk| s.spawn(move || self.scan_chunk(chunk)))
+                .collect();
+            workers
+                .into_iter()
+                .map(|w| w.join().expect("scan worker panicked"))
+                .collect::<Result<Vec<_>>>()
+        })?;
+        let idx: HashMap<_, _> = parts.into_iter().flatten().collect();
+        tracing::info!(
+            objects = idx.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "store indexed"
+        );
+        *self.index.write().unwrap() = idx;
+        Ok(())
+    }
+
+    fn scan_chunk(&self, hashes: &[String]) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            let text = fs::read_to_string(self.root.join(format!("{hash}.narinfo")))?;
             match NarInfo::parse(&text) {
-                Ok(n) => {
-                    idx.insert(hash.to_string(), n.url);
-                }
+                Ok(n) => out.push((hash.clone(), n.url)),
                 Err(e) => tracing::warn!(hash, error = %e, "skipping unparseable narinfo"),
             }
         }
-        *self.index.write().unwrap() = idx;
-        Ok(())
+        Ok(out)
     }
 
     /// Remove temp files a killed process left behind; returns how many.
@@ -811,6 +843,23 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         s.remove_narinfo("v4f0jj9sz97ckskvacf40llz4nfr19jf")
             .unwrap();
         assert!(!s.has("v4f0jj9sz97ckskvacf40llz4nfr19jf"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_indexes_every_narinfo_across_threads() {
+        let root = tmp();
+        Store::open(&root).unwrap();
+        let n = SCAN_THREADS * 3 + 1;
+        for i in 0..n {
+            fs::write(root.join(format!("{i:032}.narinfo")), REAL).unwrap();
+        }
+        fs::write(root.join("bad.narinfo"), "garbage").unwrap();
+        fs::write(root.join(".tmp.narinfo"), REAL).unwrap();
+        let s = Store::open(&root).unwrap();
+        assert_eq!(s.len(), n);
+        assert!(s.has(&format!("{:032}", n - 1)));
+        assert!(!s.has("bad"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -294,6 +294,7 @@ fn main() -> Result<()> {
             pull_through_stall_timeout_secs,
             reencode,
         } => {
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), data, "kasha starting");
             let store = Arc::new(store::Store::open(&data)?);
             let stale = store.clean_temps();
             if stale > 0 {

@@ -566,6 +566,18 @@ impl Store {
     }
 }
 
+/// The `Compression` a NAR file's name says, as Nix names them
+/// (`.nar.xz`, `.nar.zst`, `.nar.bz2`, `.nar`); `other` for the rest.
+pub fn compression_of(file: &str) -> &'static str {
+    match file.rsplit_once(".nar") {
+        Some((_, "")) => "none",
+        Some((_, ".xz")) => "xz",
+        Some((_, ".zst")) => "zstd",
+        Some((_, ".bz2")) => "bzip2",
+        _ => "other",
+    }
+}
+
 const TEMP_PREFIX: &str = ".tmp-";
 
 /// A temp file untouched for this long has no writer: one that is still
@@ -910,6 +922,20 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         assert!(s.manifest_path("flake", "../../etc").is_err());
         assert!(s.nar_path(".hidden").is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compression_of_reads_nix_file_names() {
+        for (file, compression) in [
+            ("1abc.nar.xz", "xz"),
+            ("1abc.nar.zst", "zstd"),
+            ("1abc.nar.bz2", "bzip2"),
+            ("1abc.nar", "none"),
+            ("1abc.nar.br", "other"),
+            ("deadbeef", "other"),
+        ] {
+            assert_eq!(compression_of(file), compression, "{file}");
+        }
     }
 
     #[test]

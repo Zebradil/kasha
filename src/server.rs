@@ -52,6 +52,34 @@ pub struct Counters {
     pub bytes_up: AtomicU64,
     pub bytes_served: AtomicU64,
     pub bytes_ingested: AtomicU64,
+    /// NAR files stored by a push and by mirror-down, by their encoding.
+    pub nars_ingested: ByCompression,
+    pub nars_down: ByCompression,
+}
+
+/// Values of the `compression` label: what the box can decode, and the rest.
+pub const COMPRESSIONS: [&str; 5] = ["none", "xz", "zstd", "bzip2", "other"];
+
+fn compression_slot(compression: &str) -> usize {
+    COMPRESSIONS
+        .iter()
+        .position(|c| *c == compression)
+        .unwrap_or(COMPRESSIONS.len() - 1)
+}
+
+/// A counter per `COMPRESSIONS` value.
+#[derive(Default)]
+pub struct ByCompression([AtomicU64; COMPRESSIONS.len()]);
+
+impl ByCompression {
+    pub fn bump(&self, compression: &str) {
+        bump(&self.0[compression_slot(compression)]);
+    }
+
+    #[cfg(test)]
+    pub fn get(&self, compression: &str) -> u64 {
+        self.0[compression_slot(compression)].load(Ordering::Relaxed)
+    }
 }
 
 /// How long an age scan of `nar/` is reused across scrapes.
@@ -79,6 +107,8 @@ pub struct AgeStats {
     buckets: [(u64, u64); AGE_BUCKETS.len() + 1],
     oldest: Option<SystemTime>,
     newest: Option<SystemTime>,
+    /// (count, bytes) per `COMPRESSIONS` value, by file name.
+    compressions: [(u64, u64); COMPRESSIONS.len()],
 }
 
 impl AgeStats {
@@ -91,11 +121,14 @@ impl AgeStats {
                 return st;
             }
         };
-        for (_, mtime, len) in files {
+        for (name, mtime, len) in files {
             let age = now.duration_since(mtime).unwrap_or_default().as_secs();
             let i = AGE_BUCKETS.partition_point(|&b| b < age);
             st.buckets[i].0 += 1;
             st.buckets[i].1 += len;
+            let c = &mut st.compressions[compression_slot(crate::store::compression_of(&name))];
+            c.0 += 1;
+            c.1 += len;
             st.oldest = Some(st.oldest.map_or(mtime, |o| o.min(mtime)));
             st.newest = Some(st.newest.map_or(mtime, |n| n.max(mtime)));
         }
@@ -676,6 +709,26 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         writeln!(o, "kasha_pull_through_queued {queued}")?;
     }
 
+    head(
+        o,
+        "kasha_nar_stored_total",
+        "counter",
+        "NAR files stored, by how they arrived (ingest: pushed in, by file name; down: mirror-down; pull: pull-through, stored as zstd) and the encoding they arrived in.",
+    )?;
+    let pulled = app.pull.as_ref().map(|p| ("pull", &p.stats.nars_stored));
+    for (direction, by) in [("ingest", &c.nars_ingested), ("down", &c.nars_down)]
+        .into_iter()
+        .chain(pulled)
+    {
+        for (compression, v) in COMPRESSIONS.iter().zip(&by.0) {
+            writeln!(
+                o,
+                "kasha_nar_stored_total{{direction=\"{direction}\",compression=\"{compression}\"}} {}",
+                n(v)
+            )?;
+        }
+    }
+
     let ages = app.age_stats();
     head(
         o,
@@ -699,6 +752,23 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
     for (i, (_, bytes)) in ages.buckets.iter().enumerate() {
         acc += bytes;
         writeln!(o, "kasha_nar_age_bytes{{le=\"{}\"}} {acc}", le(i))?;
+    }
+    for (name, help, pick) in [
+        (
+            "kasha_nar_compression_objects",
+            "NARs on disk by the encoding their file name says, from the same scan as kasha_nar_age_objects.",
+            (|c: &(u64, u64)| c.0) as fn(&(u64, u64)) -> u64,
+        ),
+        (
+            "kasha_nar_compression_bytes",
+            "NAR bytes on disk by the encoding their file name says.",
+            |c: &(u64, u64)| c.1,
+        ),
+    ] {
+        head(o, name, "gauge", help)?;
+        for (compression, c) in COMPRESSIONS.iter().zip(&ages.compressions) {
+            writeln!(o, "{name}{{compression=\"{compression}\"}} {}", pick(c))?;
+        }
     }
     // Absent on an empty store, like the sweep stamp.
     if let (Some(oldest), Some(newest)) = (ages.oldest, ages.newest) {
@@ -769,6 +839,10 @@ fn ingest(app: &App, req: &mut Request, path: &str) -> Result<String> {
     if let Some(file) = path.strip_prefix("nar/") {
         let n = app.store.put_nar(file, req.as_reader())?;
         app.counters.bytes_ingested.fetch_add(n, Ordering::Relaxed);
+        // Its narinfo may not be here yet, so the name tells the encoding.
+        app.counters
+            .nars_ingested
+            .bump(crate::store::compression_of(file));
         tracing::info!(file, bytes = n, "ingested nar");
         return Ok("nar stored".into());
     }
@@ -1036,9 +1110,18 @@ References: \n";
             "kasha_nar_age_objects{le=\"3600\"} 2",
             "kasha_nar_age_objects{le=\"+Inf\"} 2",
             "kasha_nar_age_bytes{le=\"+Inf\"} 9",
+            "# TYPE kasha_nar_stored_total counter",
+            "kasha_nar_stored_total{direction=\"ingest\",compression=\"xz\"} 2",
+            "kasha_nar_stored_total{direction=\"ingest\",compression=\"zstd\"} 0",
+            "kasha_nar_stored_total{direction=\"down\",compression=\"xz\"} 0",
+            "# TYPE kasha_nar_compression_objects gauge",
+            "kasha_nar_compression_objects{compression=\"xz\"} 2",
+            "kasha_nar_compression_objects{compression=\"zstd\"} 0",
+            "kasha_nar_compression_bytes{compression=\"xz\"} 9",
         ] {
             assert!(m.lines().any(|l| l == line), "missing {line:?} in:\n{m}");
         }
+        assert!(!m.contains("direction=\"pull\",compression"));
         assert!(!m.contains("kasha_last_sweep_timestamp_seconds"));
         assert!(m.contains("kasha_nar_oldest_timestamp_seconds "));
 

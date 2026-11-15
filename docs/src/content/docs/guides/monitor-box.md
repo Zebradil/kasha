@@ -52,6 +52,9 @@ needs no authentication.
 | `kasha_nar_age_objects{le}` | gauge | NARs on disk whose mtime is at most `le` seconds old, cumulative like a histogram. The mtime is when the box stored the NAR or last wrote a narinfo naming it; with `KASHA_UNLISTED_MAX_BYTES` set, also when a client last read it |
 | `kasha_nar_age_bytes{le}` | gauge | bytes of those NARs |
 | `kasha_nar_oldest_timestamp_seconds`, `kasha_nar_newest_timestamp_seconds` | gauge | mtime of the oldest and newest NAR on disk; absent on an empty store |
+| `kasha_nar_compression_objects{compression}` | gauge | NAR files on disk by the encoding their name says: `zstd` (`.nar.zst`), `xz` (`.nar.xz`), `bzip2` (`.nar.bz2`), `none` (`.nar`) or `other`. Old files no narinfo names any more count until they are removed |
+| `kasha_nar_compression_bytes{compression}` | gauge | bytes of those files |
+| `kasha_nar_stored_total{direction,compression}` | counter | NAR files stored, by how they arrived: `ingest` (a push, `compression` from the file name, since its narinfo may come later), `down` (mirror-down, from the narinfo) or `pull` (pull-through, the source's encoding; the box stored it as zstd) |
 | `kasha_pull_through_lookups_total{result}` | counter | narinfo misses handled by pull-through: `found` (a source had the path), `miss` (no source had it), `negative` (answered from a remembered miss), `failed` (a source could not answer), `capped` (over `KASHA_PULL_THROUGH_MAX_PENDING`) or `busy` (a quarter of `KASHA_MAX_INFLIGHT` narinfo requests already wait on a lookup) |
 | `kasha_pull_through_nar_waits_total{result}` | counter | NAR requests for a download in flight: `waited` (held until it ended) or `busy` (turned away with `404`: a quarter of `KASHA_MAX_INFLIGHT` requests already wait) |
 | `kasha_pull_through_fetches_total{result}` | counter | background fetches ended: `stored`, `failed` or `abandoned` (a push or mirror-down stored the path first) |
@@ -59,10 +62,12 @@ needs no authentication.
 | `kasha_pull_through_queued` | gauge | pending paths whose download has not started |
 
 Counters start at zero when the box restarts. `store_bytes` has no metric: it walks the whole store, which is too
-costly to repeat on every scrape; read it from `/status`. The NAR age metrics read only `nar/` and are rescanned at most
-every 5 minutes. Byte counters move when a transfer completes, so one large NAR shows as a spike rather than a plateau.
+costly to repeat on every scrape; read it from `/status`. The NAR age and compression metrics read only `nar/` and are
+rescanned at most every 5 minutes. Byte counters move when a transfer completes, so one large NAR shows as a spike rather than a plateau.
 
-The `kasha_pull_through_*` metrics and the `pull` byte counters exist only on a box with pull-through on. A narinfo
+`kasha_nar_compression_bytes` says how much xz a box holds; `kasha_nar_stored_total` says which route brings it in.
+
+The `kasha_pull_through_*` metrics and the `pull` byte and stored counters exist only on a box with pull-through on. A narinfo
 answered by pull-through counts as a `hit` in `kasha_narinfo_requests_total`. A `kasha_pull_through_queued` that stays
 high means the downloads cannot keep up: raise `KASHA_PULL_THROUGH_WORKERS`. A rising `failed` count is explained in
 the logs (`narinfo lookup failed`, `pull-through fetch failed`). A rising `busy` count in either metric means consumers

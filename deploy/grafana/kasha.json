@@ -778,10 +778,56 @@
       }
     },
     {
+      "id": 42,
+      "type": "timeseries",
+      "title": "NAR bytes by encoding",
+      "gridPos": { "x": 0, "y": 80, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (compression) (kasha_nar_compression_bytes{job=\"$job\", instance=~\"$instance\"})",
+          "legendFormat": "{{compression}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0, "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "description": "Disk used by NAR files across the selected instances, by the encoding their file name says. With KASHA_REENCODE on, xz, bzip2 and none shrink as the re-encoder works through them; an old file goes only once orphan removal takes it, a day or more later. Refreshed at most every 5 minutes."
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "NARs stored by arrival",
+      "gridPos": { "x": 12, "y": 80, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (direction, compression) (rate(kasha_nar_stored_total{job=\"$job\", instance=~\"$instance\"}[$__rate_interval])) > 0",
+          "legendFormat": "{{direction}} {{compression}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "min": 0, "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "description": "NAR files stored per second across the selected instances, by how they arrived (ingest: pushed, down: mirror-down, pull: pull-through) and the encoding they arrived in: which route brings xz in. Pull-through stores every one as zstd."
+    },
+    {
       "id": 41,
       "type": "row",
       "title": "Mirror, sync, box GC and pushes",
-      "gridPos": { "x": 0, "y": 80, "w": 24, "h": 1 },
+      "gridPos": { "x": 0, "y": 88, "w": 24, "h": 1 },
       "collapsed": true,
       "panels": [
         {
@@ -789,7 +835,7 @@
           "type": "stat",
           "title": "Pending mirror-up",
           "description": "Local-origin generations not yet mirrored to the remote cache. Brief nonzero values are normal after a push; one that stays above zero means mirror-up is stuck (KashaMirrorUpStuck).",
-          "gridPos": { "x": 0, "y": 81, "w": 8, "h": 4 },
+          "gridPos": { "x": 0, "y": 89, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -823,7 +869,7 @@
           "type": "stat",
           "title": "Oldest flake sync",
           "description": "Age of the stalest flake's last mirror-down. Healthy is under KASHA_SYNC_INTERVAL plus the cycle's run time; red past 1h matches the KashaSyncStale alert.",
-          "gridPos": { "x": 8, "y": 81, "w": 8, "h": 4 },
+          "gridPos": { "x": 8, "y": 89, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -858,7 +904,7 @@
           "type": "stat",
           "title": "Gaps",
           "description": "Closure paths across all flakes' manifests that no source could supply. Usually expected, never an error.",
-          "gridPos": { "x": 16, "y": 81, "w": 8, "h": 4 },
+          "gridPos": { "x": 16, "y": 89, "w": 8, "h": 4 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -880,7 +926,7 @@
           "id": 32,
           "type": "timeseries",
           "title": "Time since last sync, per flake",
-          "gridPos": { "x": 0, "y": 85, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 93, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -914,7 +960,7 @@
           "id": 33,
           "type": "timeseries",
           "title": "Gaps, per flake",
-          "gridPos": { "x": 12, "y": 85, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 93, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -933,7 +979,7 @@
           "id": 34,
           "type": "timeseries",
           "title": "Time since newest generation was published, per branch",
-          "gridPos": { "x": 0, "y": 93, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 101, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -953,7 +999,7 @@
           "id": 35,
           "type": "timeseries",
           "title": "Time since the box received a new generation, per branch",
-          "gridPos": { "x": 12, "y": 93, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 101, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -974,7 +1020,7 @@
           "type": "table",
           "title": "Newest generation per branch",
           "description": "Published: manifest timestamp. Arrived: when the box stored it. Lag: arrival minus publish, i.e. how long replication took (negative when the box's clock is behind the producer's).",
-          "gridPos": { "x": 0, "y": 101, "w": 24, "h": 8 },
+          "gridPos": { "x": 0, "y": 109, "w": 24, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -1018,7 +1064,7 @@
           "id": 37,
           "type": "timeseries",
           "title": "Ingest requests",
-          "gridPos": { "x": 0, "y": 109, "w": 12, "h": 8 },
+          "gridPos": { "x": 0, "y": 117, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -1038,7 +1084,7 @@
           "id": 38,
           "type": "timeseries",
           "title": "Pending mirror-up",
-          "gridPos": { "x": 12, "y": 109, "w": 12, "h": 8 },
+          "gridPos": { "x": 12, "y": 117, "w": 12, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -1058,7 +1104,7 @@
           "type": "stat",
           "title": "Last box GC sweep",
           "description": "Age of the last box GC sweep attempt. Red past 2 days matches the KashaSweepStale alert. Absent until a box's first sweep.",
-          "gridPos": { "x": 0, "y": 117, "w": 6, "h": 8 },
+          "gridPos": { "x": 0, "y": 125, "w": 6, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {
@@ -1092,7 +1138,7 @@
           "id": 40,
           "type": "timeseries",
           "title": "Box GC deletions",
-          "gridPos": { "x": 6, "y": 117, "w": 18, "h": 8 },
+          "gridPos": { "x": 6, "y": 125, "w": 18, "h": 8 },
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "targets": [
             {

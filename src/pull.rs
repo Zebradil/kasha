@@ -106,6 +106,8 @@ pub struct Stats {
     pub abandoned: AtomicU64,
     pub bytes_remote: AtomicU64,
     pub bytes_upstream: AtomicU64,
+    /// NARs downloaded and stored, by the source's encoding.
+    pub nars_stored: crate::server::ByCompression,
 }
 
 fn bump(c: &AtomicU64) {
@@ -570,7 +572,12 @@ impl Pull {
             let info = NarInfo::parse(&raw)?;
             let nar_tmp = tmp.as_ref().map(|t| t.0.as_path());
             match self.store.publish_pulled(&info, raw.as_bytes(), nar_tmp)? {
-                Published::Stored => return Ok(Outcome::Stored),
+                Published::Stored => {
+                    if nar_tmp.is_some() {
+                        self.stats.nars_stored.bump(&p.info.compression);
+                    }
+                    return Ok(Outcome::Stored);
+                }
                 Published::Lost => return Ok(Outcome::Abandoned),
                 Published::NarExists => {
                     tmp = None;
@@ -1303,6 +1310,11 @@ Deriver: {hash}-pkg-{c}.drv\n",
             assert_eq!(field(&stored, "FileSize"), Some(&*file.len().to_string()));
             assert_signed_fields_kept(&stored, &o.narinfo);
             assert_eq!(k.get(&format!("nar/{}", o.box_file)), (200, file));
+        }
+        // Counted by the encoding the source served.
+        let stats = &k.app.pull.as_ref().unwrap().stats;
+        for compression in ENCODINGS {
+            assert_eq!(stats.nars_stored.get(compression), 1, "{compression}");
         }
     }
 

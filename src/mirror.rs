@@ -193,6 +193,10 @@ impl Mirror<'_> {
                     &self.counters.bytes_down_upstream
                 };
                 bytes.fetch_add(n, Ordering::Relaxed);
+                // 0: a NAR of that name appeared meanwhile and was kept.
+                if n > 0 {
+                    self.counters.nars_down.bump(&info.compression);
+                }
             }
             // Nar first: index never dangles. Required, so a NAR removed since
             // the check above leaves the path a gap, not a narinfo without it.
@@ -428,6 +432,7 @@ References: \n"
             humantime::parse_rfc3339("2026-08-20T10:00:00Z").unwrap()
         );
         assert!(m.counters.bytes_down_remote.load(Ordering::Relaxed) > 0);
+        assert_eq!(m.counters.nars_down.get("xz"), 1);
 
         // Second cycle: idempotent, gap still quietly reported.
         let report = m.down().unwrap();
@@ -488,6 +493,7 @@ References: \n"
         // The manifest and the narinfo, not the NAR.
         assert_eq!(remote.gets() - gets, 2);
         assert_eq!(m.counters.bytes_down_remote.load(Ordering::Relaxed), 0);
+        assert_eq!(m.counters.nars_down.get("xz"), 0);
 
         // With nothing stored under the name, the source's NAR is stored.
         let (hb, ib, nb) = object(&sk, 'b', "pkg-b");

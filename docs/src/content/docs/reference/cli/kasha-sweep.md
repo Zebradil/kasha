@@ -11,6 +11,10 @@ Run one box GC sweep now and exit; safe beside a running `serve`
 Usage: kasha sweep [OPTIONS]
 
 Options:
-      --data <DATA>  Store root (flat binary-cache layout) [env: KASHA_DATA=] [default: /kasha]
-  -h, --help         Print help
+      --data <DATA>
+          Store root (flat binary-cache layout) [env: KASHA_DATA=] [default: /kasha]
+      --unlisted-max-bytes <UNLISTED_MAX_BYTES>
+          Keep unlisted paths, those no retained manifest lists, within this many bytes by evicting the least recently used (ADR-0013). Unset, the sweep alone decides for them, by age [env: KASHA_UNLISTED_MAX_BYTES=]
+  -h, --help
+          Print help
 ```

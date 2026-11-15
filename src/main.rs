@@ -60,6 +60,15 @@ enum Cmd {
         /// Minimum seconds between box GC sweeps, checked after each sync cycle.
         #[arg(long, env = "KASHA_GC_INTERVAL", default_value = "86400")]
         gc_interval_secs: u64,
+        /// Keep unlisted paths, those no retained manifest lists, within this
+        /// many bytes by evicting the least recently used (ADR-0013). Unset,
+        /// the sweep alone decides for them, by age.
+        #[arg(
+            long,
+            env = "KASHA_UNLISTED_MAX_BYTES",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        unlisted_max_bytes: Option<u64>,
         /// Cap on concurrent requests. Each in-flight response holds a slot
         /// for its whole transfer, so this bounds slow readers, not CPU.
         #[arg(
@@ -110,12 +119,13 @@ enum Cmd {
             value_parser = clap::value_parser!(u64).range(1..)
         )]
         pull_through_lookup_timeout_secs: u64,
-        /// Seconds a NAR download may receive nothing before it is dropped.
+        /// Seconds a NAR download may receive nothing before it is dropped;
+        /// under 3600, the age at which a temp file counts as abandoned.
         #[arg(
             long,
             env = "KASHA_PULL_THROUGH_STALL_TIMEOUT",
             default_value = "60",
-            value_parser = clap::value_parser!(u64).range(1..)
+            value_parser = clap::value_parser!(u64).range(1..store::TEMP_MAX_AGE.as_secs())
         )]
         pull_through_stall_timeout_secs: u64,
     },
@@ -168,6 +178,15 @@ enum Cmd {
         /// Store root (flat binary-cache layout).
         #[arg(long, env = "KASHA_DATA", default_value = "/kasha")]
         data: String,
+        /// Keep unlisted paths, those no retained manifest lists, within this
+        /// many bytes by evicting the least recently used (ADR-0013). Unset,
+        /// the sweep alone decides for them, by age.
+        #[arg(
+            long,
+            env = "KASHA_UNLISTED_MAX_BYTES",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        unlisted_max_bytes: Option<u64>,
     },
 }
 
@@ -255,6 +274,7 @@ fn main() -> Result<()> {
             upstreams,
             sync_interval_secs,
             gc_interval_secs,
+            unlisted_max_bytes,
             max_inflight,
             priority,
             pull_through,
@@ -314,10 +334,17 @@ fn main() -> Result<()> {
                 ages: Default::default(),
                 priority,
                 pull,
+                lru: unlisted_max_bytes.map(gc::Lru::new),
             });
             if app.token.is_none() {
                 tracing::warn!("KASHA_TOKEN unset: all writes disabled");
             }
+
+            if let Some(max_bytes) = unlisted_max_bytes {
+                tracing::info!(max_bytes, "unlisted paths capped");
+            }
+            let maintain_app = app.clone();
+            std::thread::spawn(move || gc::maintain(&maintain_app, gc::POLL));
 
             if let Some(s3) = s3 {
                 let sync_app = app.clone();
@@ -325,7 +352,7 @@ fn main() -> Result<()> {
                     sync_loop(sync_app, s3, ups, sync_interval_secs, gc_interval_secs)
                 });
             } else {
-                tracing::warn!("KASHA_REMOTE unset: mirroring and GC disabled");
+                tracing::warn!("KASHA_REMOTE unset: mirroring and generation GC disabled");
             }
 
             if std::env::var_os("KASHA_HTTP_THREADS").is_some() {
@@ -467,9 +494,16 @@ fn main() -> Result<()> {
             Ok(())
         }
 
-        Cmd::Sweep { data } => {
+        Cmd::Sweep {
+            data,
+            unlisted_max_bytes,
+        } => {
             let store = store::Store::open(&data)?;
-            let report = gc::box_sweep(&store, SystemTime::now(), gc::GRACE);
+            let lru = unlisted_max_bytes.map(gc::Lru::new);
+            let now = SystemTime::now();
+            let report = gc::box_sweep(&store, now, gc::GRACE, lru.is_some());
+            // This process cannot see the fetches of a `serve` beside it.
+            let evicted = lru.map(|lru| gc::evict(&store, now, &lru, &|_| false));
             // Stamped after the sweep, unlike the timer: a running `serve`
             // prunes its index when the stamp moves, so the stamp must land
             // once every deletion (even of a failed sweep) is on disk. It also
@@ -477,6 +511,14 @@ fn main() -> Result<()> {
             store.record_sweep().context("sweep stamp")?;
             for key in &report?.deleted {
                 println!("deleted {key}");
+            }
+            if let Some(evicted) = evicted.transpose()? {
+                for key in &evicted.evicted {
+                    println!("evicted {key}");
+                }
+                for key in &evicted.orphans {
+                    println!("deleted {key}");
+                }
             }
             Ok(())
         }
@@ -543,7 +585,7 @@ fn sync_loop(
                 tracing::warn!(error = format!("{e:#}"), "sweep stamp failed");
             }
             seen_sweep = app.store.last_sweep();
-            match gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE) {
+            match gc::box_sweep(&app.store, SystemTime::now(), gc::GRACE, app.lru.is_some()) {
                 Ok(r) => {
                     app.counters
                         .sweep_deleted
@@ -551,13 +593,29 @@ fn sync_loop(
                 }
                 Err(e) => tracing::warn!(error = format!("{e:#}"), "box sweep failed"),
             }
-            // What a crash shortly before the last start left behind was
-            // too young to remove then.
-            let stale = app.store.clean_temps();
-            if stale > 0 {
-                tracing::info!(stale, "removed abandoned temp files");
-            }
         }
         std::thread::sleep(Duration::from_secs(sync_interval));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stall_timeout_stays_under_the_temp_age_limit() {
+        let serve = |stall: &str| {
+            Cli::try_parse_from([
+                "kasha",
+                "serve",
+                "--trusted-keys",
+                "k:x",
+                "--pull-through-stall-timeout-secs",
+                stall,
+            ])
+        };
+        let limit = store::TEMP_MAX_AGE.as_secs();
+        assert!(serve(&(limit - 1).to_string()).is_ok());
+        assert!(serve(&limit.to_string()).is_err());
     }
 }

@@ -247,6 +247,12 @@ impl Pull {
         (st.pending.len(), st.queue.len())
     }
 
+    /// Whether a fetch in flight produces or reuses the NAR `file`, so
+    /// eviction must leave it to the fetch and its waiters.
+    pub fn busy(&self, file: &str) -> bool {
+        self.state.lock().unwrap().files.contains_key(file)
+    }
+
     /// The narinfo to answer a `GET <hash>.narinfo` the store could not, or
     /// None for a `404`. Starts the lookup and the background fetch.
     pub fn narinfo(&self, hash: &str) -> Option<String> {
@@ -1064,6 +1070,7 @@ Deriver: {hash}-pkg-{c}.drv\n",
                 ages: Default::default(),
                 priority,
                 pull,
+                lru: None,
             });
             let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
             let base = format!("http://{}", server.server_addr().to_ip().unwrap());
@@ -1816,6 +1823,65 @@ Deriver: {hash}-pkg-{c}.drv\n",
             b"something else"
         );
         assert_eq!(up.asked(&format!("GET {}", bad.key)), 0);
+    }
+
+    #[test]
+    fn eviction_keeps_a_nar_a_queued_fetch_will_reuse() {
+        let (up, base) = Upstream::start();
+        let k = Kasha::pulling(&[&base], config());
+        let pull = k.app.pull.as_ref().unwrap();
+
+        // An old unlisted path whose NAR is the one `y` will reuse: the
+        // whole path stays while the fetch is queued.
+        let y = object(&key(), 'y', "xz");
+        up.add(&y);
+        let x = object(&key(), 'x', "none");
+        let x_narinfo = x.narinfo.replace(&x.key, &format!("nar/{}", y.box_file));
+        let store = &k.app.store;
+        store
+            .put_nar(&y.box_file, &zstd::encode_all(&y.nar[..], 3).unwrap()[..])
+            .unwrap();
+        store
+            .put_narinfo(&NarInfo::parse(&x_narinfo).unwrap(), x_narinfo.as_bytes())
+            .unwrap();
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(7 * 86400);
+        for path in [store.nar_path(&y.box_file), store.narinfo_path(&x.hash)] {
+            File::open(path.unwrap())
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+
+        // Both workers stuck on downloads, so `y` waits in the queue.
+        up.hold("nar/");
+        let stuck: Vec<Obj> = ['p', 'q']
+            .into_iter()
+            .map(|c| object(&key(), c, "xz"))
+            .collect();
+        for o in &stuck {
+            up.add(o);
+            assert_eq!(k.narinfo(o).0, 200);
+        }
+        eventually("both workers to download", || {
+            stuck
+                .iter()
+                .all(|o| up.asked(&format!("GET {}", o.key)) == 1)
+        });
+        assert_eq!(k.narinfo(&y).0, 200);
+        assert!(pull.busy(&y.box_file));
+
+        let lru = crate::gc::Lru::new(1);
+        let now = std::time::SystemTime::now();
+        let r = crate::gc::evict(store, now, &lru, &|f| pull.busy(f)).unwrap();
+        assert!(r.evicted.is_empty(), "evicted {:?}", r.evicted);
+        assert!(store.has(&x.hash));
+        assert!(store.nar_path(&y.box_file).unwrap().exists());
+
+        up.release();
+        k.settle();
+        assert!(!pull.busy(&y.box_file));
+        assert!(store.has(&y.hash));
+        assert_eq!(up.asked(&format!("GET {}", y.key)), 0);
     }
 
     #[test]

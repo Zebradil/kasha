@@ -108,6 +108,10 @@ has a remote cache.
 3. **Box GC** runs when `KASHA_GC_INTERVAL` has passed since the last sweep, or `kasha sweep` runs it on demand; see
    [Retention and GC](../retention/).
 
+A second thread runs on every box, remote cache or not: it removes temp files a killed writer left behind, and with
+`KASHA_UNLISTED_MAX_BYTES` set it evicts the least recently used paths no manifest lists; see
+[Retention and GC](../retention/#unlisted-paths-and-the-size-cap).
+
 Mirror-down is a dumb fetch of what the manifest lists: the box never expands closures or builds anything. That is why
 manifests carry the full build closure; see [Generation manifests](../generation-manifest/).
 

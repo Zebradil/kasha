@@ -126,14 +126,42 @@ impl Store {
     }
 
     /// Store a verified narinfo byte-identical and index it. Caller runs
-    /// `NarInfo::verify` first.
+    /// `NarInfo::verify` first. Its NAR may come later: Nix can push the
+    /// narinfo first.
     pub fn put_narinfo(&self, info: &NarInfo, raw: &[u8]) -> Result<()> {
+        self.put_narinfo_checked(info, raw, false)
+    }
+
+    /// `put_narinfo` for a caller that saw the NAR stored: fails, writing
+    /// nothing, when the NAR is gone by the time the narinfo would land,
+    /// removed by eviction or a sweep since.
+    pub fn put_narinfo_of_stored_nar(&self, info: &NarInfo, raw: &[u8]) -> Result<()> {
+        self.put_narinfo_checked(info, raw, true)
+    }
+
+    fn put_narinfo_checked(&self, info: &NarInfo, raw: &[u8], nar_required: bool) -> Result<()> {
         let path = self.narinfo_path(info.store_hash())?;
+        let nar = info.url.strip_prefix("nar/").map(|f| self.nar_path(f));
+        let nar = nar.transpose()?;
         let tmp = write_temp(&path, |f| f.write_all(raw))?;
         // Rename and index update under one lock, so index and disk agree
         // when this races `publish_pulled` for the same path. The write and
         // its fsync stay outside: the lock also serves every index reader.
         let mut idx = self.index.write().unwrap();
+        // The NAR this names may be past grace already: a push skips the
+        // upload of a NAR the box has. As in `publish_locked`, it is made as
+        // young as its new narinfo, so no sweep that listed the store before
+        // takes it. Absent is fine unless the caller counted on it.
+        if let Some(nar) = nar {
+            match touch(&nar) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !nar_required => {}
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e).context("touching the narinfo's NAR");
+                }
+            }
+        }
         move_into_place(&tmp, &path)?;
         idx.insert(info.store_hash().to_string(), info.url.clone());
         Ok(())
@@ -228,6 +256,24 @@ impl Store {
         Ok(n)
     }
 
+    /// Stream a nar object to disk unless one of that name is stored, which
+    /// is kept. Returns the bytes stored, 0 when the existing file was kept.
+    pub fn put_nar_new(&self, file: &str, mut body: impl Read) -> Result<u64> {
+        let path = self.nar_path(file)?;
+        let mut n = 0;
+        let tmp = write_temp(&path, |f| {
+            n = std::io::copy(&mut body, f)?;
+            Ok(())
+        })?;
+        let linked = fs::hard_link(&tmp, &path);
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(n),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(0),
+            Err(e) => Err(e).with_context(|| format!("storing {}", path.display())),
+        }
+    }
+
     pub fn manifest_path(&self, flake: &str, gen_id: &str) -> Result<PathBuf> {
         Ok(self
             .root
@@ -272,8 +318,14 @@ impl Store {
     }
 
     /// Parse one manifest file; `None` (logged) when it is not valid v3.
+    /// Absent too when mirror-down removed it since it was listed.
     pub fn load_manifest(&self, path: &Path) -> Result<Option<Manifest>> {
-        match Manifest::parse(&fs::read(path)?) {
+        let raw = match fs::read(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        match Manifest::parse(&raw) {
             Ok(m) => Ok(Some(m)),
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "skipping bad manifest");
@@ -364,12 +416,36 @@ impl Store {
 
     /// Remove a narinfo (file + index entry). Sweep helper.
     pub fn remove_narinfo(&self, store_hash: &str) -> Result<()> {
+        self.remove_narinfo_unless(store_hash, |_| false).map(drop)
+    }
+
+    /// Remove a narinfo unless `keep`, given its mtime as it is now, says
+    /// otherwise; returns whether it was removed. Decided under the index
+    /// lock, and file and entry go together, so no reader of the index sees
+    /// a narinfo that is gone from disk.
+    pub fn remove_narinfo_unless(
+        &self,
+        store_hash: &str,
+        keep: impl FnOnce(SystemTime) -> bool,
+    ) -> Result<bool> {
         let p = self.narinfo_path(store_hash)?;
-        if p.exists() {
-            fs::remove_file(p)?;
+        let mut idx = self.index.write().unwrap();
+        let removed = match fs::metadata(&p).and_then(|m| m.modified()) {
+            Ok(t) if keep(t) => return Ok(false),
+            Ok(_) => fs::remove_file(&p).map(|()| true),
+            Err(e) => Err(e),
+        };
+        match removed {
+            Ok(removed) => {
+                idx.remove(store_hash);
+                Ok(removed)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                idx.remove(store_hash);
+                Ok(false)
+            }
+            Err(e) => Err(e).with_context(|| format!("removing {}", p.display())),
         }
-        self.index.write().unwrap().remove(store_hash);
-        Ok(())
     }
 
     /// Drop index entries whose narinfo is gone from disk: deleted by a sweep
@@ -389,8 +465,8 @@ impl Store {
         self.index.read().unwrap().get(store_hash).cloned()
     }
 
-    /// All narinfo hashes on disk with mtimes (sweep input).
-    pub fn narinfo_files(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+    /// All narinfo hashes on disk with mtimes and sizes (sweep input).
+    pub fn narinfo_files(&self) -> Result<Vec<(String, SystemTime, u64)>> {
         let mut out = Vec::new();
         for e in fs::read_dir(&self.root)? {
             let e = e?;
@@ -400,34 +476,24 @@ impl Store {
                 .filter(|n| !n.starts_with('.'))
                 .and_then(|n| n.strip_suffix(".narinfo"))
             {
-                out.push((hash.to_string(), e.metadata()?.modified()?));
+                let m = e.metadata()?;
+                out.push((hash.to_string(), m.modified()?, m.len()));
             }
         }
         Ok(out)
     }
 
-    /// All nar object file names with mtimes (sweep input).
-    pub fn nar_files(&self) -> Result<Vec<(String, std::time::SystemTime)>> {
+    /// All nar object file names with mtimes and sizes (sweep and age
+    /// metrics input).
+    pub fn nar_files(&self) -> Result<Vec<(String, SystemTime, u64)>> {
         let mut out = Vec::new();
         for e in fs::read_dir(self.root.join("nar"))? {
             let e = e?;
             if let Some(name) = e.file_name().to_str()
                 && !name.starts_with('.')
             {
-                out.push((name.to_string(), e.metadata()?.modified()?));
-            }
-        }
-        Ok(out)
-    }
-
-    /// mtime and size of every nar object (age metrics input).
-    pub fn nar_stats(&self) -> Result<Vec<(SystemTime, u64)>> {
-        let mut out = Vec::new();
-        for e in fs::read_dir(self.root.join("nar"))? {
-            let e = e?;
-            if e.file_name().to_str().is_some_and(|n| !n.starts_with('.')) {
                 let m = e.metadata()?;
-                out.push((m.modified()?, m.len()));
+                out.push((name.to_string(), m.modified()?, m.len()));
             }
         }
         Ok(out)
@@ -440,12 +506,38 @@ impl Store {
             .ok()
     }
 
-    pub fn remove_nar(&self, file: &str) -> Result<()> {
+    /// Remove a nar object unless `keep`, given its mtime as it is now, says
+    /// otherwise; returns whether it was removed. Decided under the index
+    /// lock, so a narinfo writer, which touches the NAR it names under that
+    /// lock, either comes first and keeps it young or finds it gone.
+    /// Unlinking a large file can take long, so under the lock it is only
+    /// renamed away. Nothing new is created, so a full disk does not stop it.
+    pub fn remove_nar_unless(
+        &self,
+        file: &str,
+        keep: impl FnOnce(SystemTime) -> bool,
+    ) -> Result<bool> {
         let p = self.nar_path(file)?;
-        if p.exists() {
-            fs::remove_file(p)?;
+        let dead = dead_beside(&p)?;
+        let moved = {
+            let _idx = self.index.write().unwrap();
+            match fs::metadata(&p).and_then(|m| m.modified()) {
+                Ok(t) if keep(t) => return Ok(false),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(e).with_context(|| format!("removing {}", p.display())),
+            }
+            // A dead name another process also used holds a NAR on its way
+            // out too, so replacing it loses nothing.
+            fs::rename(&p, &dead).is_ok()
+                || fs::remove_file(&p)
+                    .map(|()| false)
+                    .with_context(|| format!("removing {}", p.display()))?
+        };
+        if moved {
+            let _ = fs::remove_file(&dead);
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Read a narinfo's raw text by store hash, if present.
@@ -477,12 +569,43 @@ impl Store {
 const TEMP_PREFIX: &str = ".tmp-";
 
 /// A temp file untouched for this long has no writer: one that is still
-/// being written keeps a fresh mtime.
-const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+/// being written keeps a fresh mtime. A download may receive nothing for
+/// less than this (`KASHA_PULL_THROUGH_STALL_TIMEOUT`).
+pub const TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Read-only: the owner may set times on a file it cannot open for writing.
 fn touch(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.set_modified(SystemTime::now())
+}
+
+/// The resolution of recorded use: a read rewrites an mtime only when it is
+/// older than this, so a hot file is not a metadata write per request.
+pub const USE_RESOLUTION: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Record a read of an open narinfo or NAR file as its use (ADR-0013). A
+/// failure fails no request, but eviction then goes by when files were
+/// stored, so it is reported once.
+pub fn mark_used(f: &fs::File) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // A time in the future (a clock step, restored files) is rewritten too,
+    // or it would never be.
+    let stale = f
+        .metadata()
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| match t.elapsed() {
+            Ok(age) => age >= USE_RESOLUTION,
+            Err(ahead) => ahead.duration() >= USE_RESOLUTION,
+        });
+    if stale && let Err(e) = f.set_modified(SystemTime::now()) {
+        if WARNED.swap(true, Ordering::Relaxed) {
+            tracing::debug!(error = %e, "recording use failed");
+        } else {
+            tracing::warn!(
+                error = %e,
+                "recording use failed; eviction goes by store time where this repeats"
+            );
+        }
+    }
 }
 
 /// A temp path beside `path`, different on every call within one process.
@@ -495,6 +618,14 @@ fn temp_beside(path: &Path) -> Result<PathBuf> {
         SEQ.fetch_add(1, Ordering::Relaxed),
         path.file_name().context("no file name")?.to_string_lossy()
     )))
+}
+
+/// A name beside `path` for a file on its way out, one `clean_temps`
+/// removes should this process die before it does.
+fn dead_beside(path: &Path) -> Result<PathBuf> {
+    let tmp = temp_beside(path)?;
+    let name = tmp.file_name().context("no file name")?.to_string_lossy();
+    Ok(tmp.with_file_name(name.replacen(TEMP_PREFIX, &format!("{TEMP_PREFIX}dead-"), 1)))
 }
 
 /// Create a temp file beside `path` that no other writer has. Pid and
@@ -674,6 +805,45 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
                 .count()
         };
         assert_eq!(temps(&root) + temps(&root.join("nar")), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn put_nar_new_keeps_an_existing_file() {
+        let root = tmp();
+        let s = Store::open(&root).unwrap();
+        assert_eq!(s.put_nar_new("f.nar.zst", &b"first"[..]).unwrap(), 5);
+        assert_eq!(s.put_nar_new("f.nar.zst", &b"second"[..]).unwrap(), 0);
+        assert_eq!(
+            fs::read(s.nar_path("f.nar.zst").unwrap()).unwrap(),
+            b"first"
+        );
+        // No temp file is left either way.
+        let names: Vec<_> = fs::read_dir(root.join("nar")).unwrap().collect();
+        assert_eq!(names.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remove_nar_unless_leaves_nothing_behind() {
+        let root = tmp();
+        let s = Store::open(&root).unwrap();
+        s.put_nar("kept.nar", &b"x"[..]).unwrap();
+        s.put_nar("gone.nar", &b"x"[..]).unwrap();
+        assert!(!s.remove_nar_unless("kept.nar", |_| true).unwrap());
+        assert!(s.remove_nar_unless("gone.nar", |_| false).unwrap());
+        assert!(!s.remove_nar_unless("never.nar", |_| false).unwrap());
+        let names: Vec<_> = fs::read_dir(root.join("nar"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["kept.nar"]);
+        // A manifest removed after it was listed is absent, not an error.
+        assert!(
+            s.load_manifest(&root.join("roots/x/y.json"))
+                .unwrap()
+                .is_none()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

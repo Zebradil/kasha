@@ -20,6 +20,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tiny_http::{Header, Method, Request, Response, Server};
 
+use crate::gc::Lru;
 use crate::manifest::Manifest;
 use crate::narinfo::{NarInfo, PubKey};
 use crate::pull::Pull;
@@ -83,14 +84,14 @@ pub struct AgeStats {
 impl AgeStats {
     fn scan(store: &Store, now: SystemTime) -> Self {
         let mut st = AgeStats::default();
-        let files = match store.nar_stats() {
+        let files = match store.nar_files() {
             Ok(f) => f,
             Err(e) => {
                 tracing::warn!(error = %e, "nar age scan failed");
                 return st;
             }
         };
-        for (mtime, len) in files {
+        for (_, mtime, len) in files {
             let age = now.duration_since(mtime).unwrap_or_default().as_secs();
             let i = AGE_BUCKETS.partition_point(|&b| b < age);
             st.buckets[i].0 += 1;
@@ -119,6 +120,8 @@ pub struct App {
     pub priority: u32,
     /// Pull-through mode; None when off.
     pub pull: Option<Arc<Pull>>,
+    /// The cap on unlisted paths; None when unset.
+    pub lru: Option<Lru>,
 }
 
 impl App {
@@ -384,6 +387,11 @@ fn respond_get(app: &App, req: Request, path: &str) {
     match file {
         Some(p) => match std::fs::File::open(&p) {
             Ok(f) => {
+                // A read is a use, which eviction goes by; a manifest is not
+                // a path.
+                if app.lru.is_some() && !path.starts_with("roots/") {
+                    crate::store::mark_used(&f);
+                }
                 let len = f.metadata().map_or(0, |m| m.len());
                 if respond(req, Response::from_file(f)) && nar {
                     app.counters.bytes_served.fetch_add(len, Ordering::Relaxed);
@@ -534,6 +542,38 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
         "kasha_sweep_deleted_objects_total {}",
         n(&c.sweep_deleted)
     )?;
+
+    if let Some(lru) = &app.lru {
+        for (name, kind, help, v) in [
+            (
+                "kasha_unlisted_bytes",
+                "gauge",
+                "Bytes of unlisted paths (narinfos no retained manifest lists, and the NARs only they name) after the last eviction pass.",
+                &lru.bytes,
+            ),
+            (
+                "kasha_unlisted_paths",
+                "gauge",
+                "Unlisted paths after the last eviction pass.",
+                &lru.paths,
+            ),
+            (
+                "kasha_unlisted_evictions_total",
+                "counter",
+                "Unlisted paths evicted since start.",
+                &lru.evicted,
+            ),
+            (
+                "kasha_unlisted_evicted_bytes_total",
+                "counter",
+                "Bytes of the narinfos and NARs eviction removed since start.",
+                &lru.evicted_bytes,
+            ),
+        ] {
+            head(o, name, kind, help)?;
+            writeln!(o, "{name} {}", n(v))?;
+        }
+    }
 
     head(
         o,
@@ -823,6 +863,7 @@ References: \n";
             ages: Default::default(),
             priority: 10,
             pull: None,
+            lru: None,
         });
         let base = spawn(app.clone());
         let agent = ureq::Agent::new_with_defaults();

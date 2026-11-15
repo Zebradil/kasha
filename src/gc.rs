@@ -6,16 +6,22 @@
 //! transitive narinfo walk); live nar keys come from retained narinfos'
 //! URL fields. A 24h grace window skips young objects, which — together
 //! with manifest-published-last ordering — makes the sweep race-safe and
-//! idempotent without locks.
+//! idempotent without a lock across processes.
+//!
+//! Under a cap (ADR-0013) the box keeps unlisted paths, those no retained
+//! manifest lists, by use instead: `evict` removes the least recently used
+//! while they take more than the cap, from `serve`'s maintenance thread.
 
 use anyhow::Result;
-use std::collections::HashSet;
-use std::time::{Duration, SystemTime};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::manifest::{Head, Manifest};
 use crate::narinfo::store_hash_of;
 use crate::remote::{Remote, fan_out};
 use crate::retention::{Gen, Policy, Verdict, retain, verdicts};
+use crate::server::App;
 use crate::store::Store;
 
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
@@ -49,18 +55,19 @@ fn to_gen(id: String, m: &Manifest) -> Gen {
 /// Box GC: deletes no manifests (mirror-down reflects remote retention);
 /// marks from the newest-N manifests per group plus every unmirrored
 /// local-origin gen (box may hold the only copy), then sweeps objects.
-pub fn box_sweep(store: &Store, now: SystemTime, grace: Duration) -> Result<SweepReport> {
-    sweep(store, now, grace, || ())
-}
-
-/// `box_sweep`, with `nars_listed` called once the NARs are listed and
-/// before any is removed: the point where a test lets a writer in.
-fn sweep(
+/// With `lru`, unlisted narinfos are left to `evict` instead of swept by age.
+pub fn box_sweep(
     store: &Store,
     now: SystemTime,
     grace: Duration,
-    nars_listed: impl FnOnce(),
+    lru: bool,
 ) -> Result<SweepReport> {
+    sweep(store, now, grace, lru, || ())
+}
+
+/// Store hashes the retained manifests list, with the number of those
+/// manifests; `None` when the store has no manifest at all.
+fn marked(store: &Store, now: SystemTime) -> Result<Option<(usize, HashSet<String>)>> {
     // Two passes so only one closure is in memory at a time: retention needs
     // every manifest's header, marking only the retained closures.
     let files = store.manifest_files()?;
@@ -70,12 +77,8 @@ fn sweep(
             gens.push(to_gen(format!("{flake}/{gen_id}"), &m));
         }
     }
-    // No manifests means no mark set, which would sweep the whole store. That
-    // is never a retention decision — it is a store that has not synced yet
-    // (fresh volume, restored backup), so leave it alone.
     if gens.is_empty() {
-        tracing::info!("box sweep skipped: no manifests to mark from");
-        return Ok(SweepReport::default());
+        return Ok(None);
     }
     let mut keep = retain(&gens, &Policy::boxed(), now);
     drop(gens);
@@ -93,27 +96,42 @@ fn sweep(
             mark.extend(m.closure.iter().map(|p| store_hash_of(p).to_string()));
         }
     }
-    let nar_of = |hash: &str| {
-        store
-            .url_of(hash)
-            .and_then(|u| u.strip_prefix("nar/").map(str::to_string))
+    Ok(Some((keep.len(), mark)))
+}
+
+/// `box_sweep`, with `nars_listed` called once the NARs are listed and
+/// before any is removed: the point where a test lets a writer in.
+fn sweep(
+    store: &Store,
+    now: SystemTime,
+    grace: Duration,
+    lru: bool,
+    nars_listed: impl FnOnce(),
+) -> Result<SweepReport> {
+    // No manifests means no mark set, which would sweep the whole store. That
+    // is never a retention decision — it is a store that has not synced yet
+    // (fresh volume, restored backup), so leave it alone.
+    let Some((retained, mark)) = marked(store, now)? else {
+        tracing::info!("box sweep skipped: no manifests to mark from");
+        return Ok(SweepReport::default());
     };
-    let mut live_nars: HashSet<String> = mark.iter().filter_map(|h| nar_of(h)).collect();
+    let mut live_nars: HashSet<String> = mark.iter().filter_map(|h| nar_of(store, h)).collect();
 
     let mut report = SweepReport {
-        retained_manifests: keep.len(),
+        retained_manifests: retained,
         ..Default::default()
     };
-    for (hash, mtime) in store.narinfo_files()? {
+    for (hash, mtime, _) in store.narinfo_files()? {
         if mark.contains(&hash) {
             continue;
         }
-        if now.duration_since(mtime).unwrap_or(Duration::ZERO) < grace {
-            report.skipped_young += 1;
+        let young = now.duration_since(mtime).unwrap_or(Duration::ZERO) < grace;
+        if young || lru {
+            report.skipped_young += usize::from(young);
             // Its NAR can be older than the narinfo, past grace already: a
             // pulled-through path that reuses a stored NAR. A narinfo the
             // sweep keeps must keep its NAR.
-            live_nars.extend(nar_of(&hash));
+            live_nars.extend(nar_of(store, &hash));
             continue;
         }
         store.remove_narinfo(&hash)?;
@@ -122,18 +140,17 @@ fn sweep(
     let nars = store.nar_files()?;
     nars_listed();
     let young = |mtime: SystemTime| now.duration_since(mtime).unwrap_or(Duration::ZERO) < grace;
-    for (file, mtime) in nars {
+    for (file, mtime, _) in nars {
         if live_nars.contains(&file) {
             continue;
         }
-        // Read again right before removing: a pulled-through path that
-        // reuses this NAR resets its age, and may have done so since the
-        // listing, from this process or from `serve` beside `kasha sweep`.
-        if young(mtime) || store.nar_modified(&file).is_some_and(young) {
+        // Read again right before removing: a narinfo that names this NAR
+        // resets its age, and may have done so since the listing, from this
+        // process or from `serve` beside `kasha sweep`.
+        if young(mtime) || !store.remove_nar_unless(&file, young)? {
             report.skipped_young += 1;
             continue;
         }
-        store.remove_nar(&file)?;
         report.deleted.push(format!("nar/{file}"));
     }
     tracing::info!(
@@ -143,6 +160,295 @@ fn sweep(
         "box sweep done"
     );
     Ok(report)
+}
+
+/// The NAR file a stored narinfo names, from the index.
+fn nar_of(store: &Store, hash: &str) -> Option<String> {
+    store
+        .url_of(hash)
+        .and_then(|u| u.strip_prefix("nar/").map(str::to_string))
+}
+
+/// A path used this recently is never evicted: a client that fetched its
+/// narinfo may not have asked for the NAR yet.
+const RECENT: Duration = Duration::from_secs(600);
+
+/// How often `maintain` runs an eviction pass, whatever was stored since.
+const PASS_EVERY: Duration = Duration::from_secs(300);
+
+/// How often `serve`'s maintenance thread wakes.
+pub const POLL: Duration = Duration::from_secs(5);
+
+/// The cap on unlisted paths (ADR-0013) and what eviction did under it.
+#[derive(Default)]
+pub struct Lru {
+    pub max_bytes: u64,
+    /// Since start: narinfos evicted, and bytes of every file eviction
+    /// removed.
+    pub evicted: AtomicU64,
+    pub evicted_bytes: AtomicU64,
+    /// Bytes and number of unlisted paths after the last pass.
+    pub bytes: AtomicU64,
+    pub paths: AtomicU64,
+}
+
+impl Lru {
+    pub fn new(max_bytes: u64) -> Self {
+        Lru {
+            max_bytes,
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct EvictReport {
+    /// Files eviction removed, as `<hash>.narinfo` and `nar/<file>`.
+    pub evicted: Vec<String>,
+    /// NARs no narinfo named, removed past the grace window.
+    pub orphans: Vec<String>,
+}
+
+/// One eviction pass: while unlisted paths take more than the cap, remove
+/// the least recently used, down to 90% of it. `busy` names NAR files a
+/// fetch in flight produces or reuses; they stay.
+pub fn evict(
+    store: &Store,
+    now: SystemTime,
+    lru: &Lru,
+    busy: &dyn Fn(&str) -> bool,
+) -> Result<EvictReport> {
+    evict_with(store, now, lru, busy, || ())
+}
+
+/// `evict`, with `listed` called once the store is listed and before
+/// anything is removed: the point where a test lets a writer in.
+fn evict_with(
+    store: &Store,
+    now: SystemTime,
+    lru: &Lru,
+    busy: &dyn Fn(&str) -> bool,
+    listed: impl FnOnce(),
+) -> Result<EvictReport> {
+    // This runs beside mirror-down. Manifests are written by rename, and one
+    // removed after the listing counts as absent; at worst a path goes just
+    // as a new manifest lists it, and mirror-down fetches it as a gap.
+    let mark = marked(store, now)?
+        .map(|(_, mark)| mark)
+        .unwrap_or_default();
+    // A use in the future, beyond what clock skew explains (a clock step,
+    // restored files), would make a path the most recent forever.
+    let recent = |t: SystemTime| match now.duration_since(t) {
+        Ok(age) => age < RECENT,
+        Err(ahead) => ahead.duration() < RECENT,
+    };
+    let nars: HashMap<String, (SystemTime, u64)> = store
+        .nar_files()?
+        .into_iter()
+        .map(|(file, mtime, size)| (file, (mtime, size)))
+        .collect();
+    let nar_size = |file: &str| nars.get(file).map_or(0, |&(_, size)| size);
+    // Narinfos naming each NAR, listed or not: a NAR goes with the last.
+    let mut refs: HashMap<String, usize> = HashMap::new();
+    let mut listed_nars: HashSet<String> = HashSet::new();
+    // (last use, store hash, narinfo size, NAR file) per unlisted path.
+    let mut unlisted = Vec::new();
+    for (hash, mtime, size) in store.narinfo_files()? {
+        let nar = nar_of(store, &hash);
+        if let Some(file) = &nar {
+            *refs.entry(file.clone()).or_default() += 1;
+        }
+        if mark.contains(&hash) {
+            listed_nars.extend(nar);
+            continue;
+        }
+        let used = nar
+            .as_ref()
+            .and_then(|file| nars.get(file))
+            .map_or(mtime, |&(nar_mtime, _)| mtime.max(nar_mtime));
+        let used = if used > now && !recent(used) {
+            SystemTime::UNIX_EPOCH
+        } else {
+            used
+        };
+        unlisted.push((used, hash, size, nar));
+    }
+    // A NAR counts once, and not at all while a listed path keeps it.
+    let counted: HashSet<&str> = unlisted
+        .iter()
+        .filter_map(|(_, _, _, nar)| nar.as_deref())
+        .filter(|file| !listed_nars.contains(*file))
+        .collect();
+    let mut bytes = unlisted.iter().map(|(_, _, size, _)| size).sum::<u64>()
+        + counted.iter().map(|file| nar_size(file)).sum::<u64>();
+    let mut paths = unlisted.len() as u64;
+    listed();
+
+    let mut report = EvictReport::default();
+    let mut freed = 0;
+    // A removal that fails stops the pass: going on would evict path after
+    // path while freeing nothing.
+    let mut failed = None;
+    if bytes > lru.max_bytes {
+        // Below the cap, so that the next pass is not due at the next path
+        // stored.
+        let target = lru.max_bytes / 10 * 9;
+        unlisted.sort();
+        for (used, hash, size, nar) in unlisted {
+            if bytes <= target || recent(used) {
+                break;
+            }
+            // Its narinfo goes with it, or the pass frees nothing for it and
+            // evicts other paths instead.
+            if nar.as_deref().is_some_and(busy) {
+                continue;
+            }
+            // Read again under the lock: a request since the listing made
+            // the narinfo or its NAR recent.
+            let nar_recent = || {
+                nar.as_deref()
+                    .and_then(|file| store.nar_modified(file))
+                    .is_some_and(recent)
+            };
+            match store.remove_narinfo_unless(&hash, |t| recent(t) || nar_recent()) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+            bytes = bytes.saturating_sub(size);
+            paths -= 1;
+            freed += size;
+            report.evicted.push(format!("{hash}.narinfo"));
+            let Some(file) = nar else { continue };
+            let left = refs.get_mut(&file).expect("counted while listing");
+            *left -= 1;
+            if *left > 0 {
+                continue;
+            }
+            match store.remove_nar_unless(&file, |t| recent(t) || busy(&file)) {
+                Ok(true) => {
+                    bytes = bytes.saturating_sub(nar_size(&file));
+                    freed += nar_size(&file);
+                    report.evicted.push(format!("nar/{file}"));
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+        }
+    }
+    // A push stores its NAR before the narinfo, so a NAR no narinfo names
+    // goes only past the grace window, as in the sweep.
+    let young = |t: SystemTime| now.duration_since(t).unwrap_or(Duration::ZERO) < GRACE;
+    for (file, &(mtime, _)) in &nars {
+        if failed.is_some() || refs.contains_key(file) || young(mtime) {
+            continue;
+        }
+        match store.remove_nar_unless(file, |t| young(t) || busy(file)) {
+            Ok(true) => report.orphans.push(format!("nar/{file}")),
+            Ok(false) => {}
+            Err(e) => failed = Some(e),
+        }
+    }
+
+    let evicted = report
+        .evicted
+        .iter()
+        .filter(|k| k.ends_with(".narinfo"))
+        .count() as u64;
+    lru.evicted.fetch_add(evicted, Ordering::Relaxed);
+    lru.evicted_bytes.fetch_add(freed, Ordering::Relaxed);
+    lru.bytes.store(bytes, Ordering::Relaxed);
+    lru.paths.store(paths, Ordering::Relaxed);
+    tracing::info!(
+        evicted,
+        freed,
+        orphans = report.orphans.len(),
+        bytes,
+        paths,
+        max_bytes = lru.max_bytes,
+        "eviction pass done"
+    );
+    match failed {
+        Some(e) => Err(e.context("eviction pass stopped")),
+        None => Ok(report),
+    }
+}
+
+/// How often `maintain` removes temp files a killed writer left behind.
+pub const CLEAN_EVERY: Duration = Duration::from_secs(3600);
+
+/// The box's housekeeping, on every box with or without a remote cache,
+/// waking every `poll`. Never returns.
+pub fn maintain(app: &App, poll: Duration) {
+    let mut cleaned = Instant::now();
+    // When the last eviction pass ended, the NAR bytes received by then, and
+    // whether it left work undone: ended over the cap, or failed.
+    let mut passed: Option<(Instant, u64, bool)> = None;
+    let received = || {
+        let pulled = app.pull.as_ref().map_or(0, |p| {
+            p.stats.bytes_remote.load(Ordering::Relaxed)
+                + p.stats.bytes_upstream.load(Ordering::Relaxed)
+        });
+        pulled + app.counters.bytes_ingested.load(Ordering::Relaxed)
+    };
+    let busy = |file: &str| app.pull.as_ref().is_some_and(|p| p.busy(file));
+    loop {
+        std::thread::sleep(poll);
+        // What a crash shortly before the last start left behind was too
+        // young to remove then.
+        if cleaned.elapsed() >= CLEAN_EVERY {
+            let stale = app.store.clean_temps();
+            if stale > 0 {
+                tracing::info!(stale, "removed abandoned temp files");
+            }
+            cleaned = Instant::now();
+        }
+        let Some(lru) = &app.lru else { continue };
+        let now_received = received();
+        let due = passed.is_none_or(|(at, seen, undone)| {
+            let bytes = lru.bytes.load(Ordering::Relaxed);
+            pass_due(
+                at.elapsed(),
+                now_received.saturating_sub(seen),
+                undone,
+                bytes,
+                lru.max_bytes,
+            )
+        });
+        if !due {
+            continue;
+        }
+        let failed = match evict(&app.store, SystemTime::now(), lru, &busy) {
+            Ok(_) => false,
+            Err(e) => {
+                tracing::warn!(error = format!("{e:#}"), "eviction pass failed");
+                true
+            }
+        };
+        let over = lru.bytes.load(Ordering::Relaxed) > lru.max_bytes;
+        passed = Some((Instant::now(), now_received, failed || over));
+    }
+}
+
+/// Whether `maintain` runs a pass, `since` the last one, which left
+/// `bytes` of unlisted paths and work `undone` (over the cap, or failed),
+/// with `grown` NAR bytes received since.
+fn pass_due(since: Duration, grown: u64, undone: bool, bytes: u64, max_bytes: u64) -> bool {
+    // Bytes received approximate what was stored: a pass is due early once
+    // they could have taken the unlisted paths over the cap. At least a
+    // tenth of the cap, though: a pass that ended over it, with only recent
+    // paths left, would otherwise rerun every poll.
+    let headroom = max_bytes.saturating_sub(bytes).max(max_bytes / 10);
+    // A quiet box under the cap needs no pass, bar the hourly one for what
+    // no byte count shows: a manifest mirror-down dropped, a narinfo pushed
+    // for a NAR the box had.
+    grown > headroom || (since >= PASS_EVERY && (grown > 0 || undone)) || since >= CLEAN_EVERY
 }
 
 /// Remote sweep: the only place manifests are deleted. Marks only from v3
@@ -392,6 +698,33 @@ References: \n"
         .into_bytes()
     }
 
+    /// An empty store root of its own.
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kasha-gc-{name}-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn age(path: &std::path::Path, t: SystemTime) {
+        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
+    }
+
+    /// Store a path, NAR first, both files last modified at `t`.
+    fn put_path(store: &Store, info: &str, nar: &[u8], t: SystemTime) {
+        let parsed = NarInfo::parse(info).unwrap();
+        let file = parsed.url.strip_prefix("nar/").unwrap();
+        store.put_nar(file, nar).unwrap();
+        store.put_narinfo(&parsed, info.as_bytes()).unwrap();
+        age(&store.nar_path(file).unwrap(), t);
+        age(&store.narinfo_path(parsed.store_hash()).unwrap(), t);
+    }
+
     fn ts(now: SystemTime, days_ago: u64) -> String {
         humantime::format_rfc3339_seconds(now - Duration::from_secs(days_ago * 86400)).to_string()
     }
@@ -587,12 +920,12 @@ References: \n"
         store.mark_local_origin("znix", "local-1-x").unwrap();
 
         // Grace covers everything -> nothing deleted yet.
-        let r = box_sweep(&store, now, GRACE).unwrap();
+        let r = box_sweep(&store, now, GRACE, false).unwrap();
         assert!(r.deleted.is_empty());
         assert!(r.skipped_young > 0);
 
         // Zero grace: gen 'd' (4th newest main) swept; local-origin 'e' kept.
-        let r = box_sweep(&store, now, Duration::ZERO).unwrap();
+        let r = box_sweep(&store, now, Duration::ZERO, false).unwrap();
         let mut deleted = r.deleted.clone();
         deleted.sort();
         let hd = &hashes[3];
@@ -608,7 +941,7 @@ References: \n"
         // Once mirrored, the guard lifts; 'e' is still newest in its group
         // so it stays retained by count.
         store.mark_mirrored("znix", "local-1-x").unwrap();
-        let r = box_sweep(&store, now, Duration::ZERO).unwrap();
+        let r = box_sweep(&store, now, Duration::ZERO, false).unwrap();
         assert!(r.deleted.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -655,7 +988,7 @@ References: \n"
             .put_narinfo(&NarInfo::parse(&ib).unwrap(), ib.as_bytes())
             .unwrap();
 
-        let r = box_sweep(&store, now, GRACE).unwrap();
+        let r = box_sweep(&store, now, GRACE, false).unwrap();
         assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
         assert!(store.nar_path(&nar).unwrap().exists());
         let _ = std::fs::remove_dir_all(dir);
@@ -703,7 +1036,7 @@ References: \n"
 
         // Pull-through publishes a path that reuses it after the sweep has
         // listed narinfos and NARs.
-        let r = sweep(&store, now, GRACE, || {
+        let r = sweep(&store, now, GRACE, false, || {
             let published = store.publish_pulled(&info, ib.as_bytes(), None).unwrap();
             assert_eq!(published, crate::store::Published::Stored);
         })
@@ -711,6 +1044,57 @@ References: \n"
         assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
         assert!(store.nar_path(nar).unwrap().exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Narinfos on disk whose NAR is not.
+    fn dangling(store: &Store) -> Vec<String> {
+        store
+            .narinfo_files()
+            .unwrap()
+            .into_iter()
+            .map(|(hash, _, _)| hash)
+            .filter(|hash| {
+                let text = store.read_narinfo(hash).unwrap().unwrap();
+                let url = NarInfo::parse(&text).unwrap().url;
+                !store
+                    .nar_path(url.strip_prefix("nar/").unwrap())
+                    .unwrap()
+                    .exists()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn box_sweep_spares_a_nar_a_push_names_while_it_runs() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("push")).unwrap();
+        let (ha, ia, na) = object('a', "pkg-a");
+        put_path(&store, &ia, &na, now);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{ha}-pkg-a")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+
+        // A NAR no narinfo names, past grace. A push whose NAR the box has
+        // already skips the upload and sends only the narinfo.
+        let (_, ib, nb) = object('b', "pkg-b");
+        let info = NarInfo::parse(&ib).unwrap();
+        let nar = info.url.strip_prefix("nar/").unwrap();
+        store.put_nar(nar, &nb[..]).unwrap();
+        age(&store.nar_path(nar).unwrap(), now - 2 * GRACE);
+
+        let r = sweep(&store, now, GRACE, false, || {
+            store.put_narinfo(&info, ib.as_bytes()).unwrap();
+        })
+        .unwrap();
+        assert!(r.deleted.is_empty(), "deleted {:?}", r.deleted);
+        assert!(dangling(&store).is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
     }
 
     #[test]
@@ -733,9 +1117,612 @@ References: \n"
 
         // Unreachable from any manifest and past every grace: still spared,
         // because an empty mark set means "not synced", not "retain nothing".
-        let r = box_sweep(&store, now, Duration::ZERO).unwrap();
+        let r = box_sweep(&store, now, Duration::ZERO, false).unwrap();
         assert!(r.deleted.is_empty());
         assert!(store.has(h.as_str()));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    const DAY: Duration = Duration::from_secs(86400);
+
+    fn app(store: Store, lru: Option<Lru>) -> std::sync::Arc<App> {
+        std::sync::Arc::new(App {
+            store: store.into(),
+            keys: vec![],
+            token: None,
+            status: Default::default(),
+            counters: Default::default(),
+            ages: Default::default(),
+            priority: 10,
+            pull: None,
+            lru,
+        })
+    }
+
+    /// Serve `app` on localhost; returns the base URL.
+    fn serve(app: std::sync::Arc<App>) -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        std::thread::spawn(move || {
+            while let Ok(req) = server.recv() {
+                crate::server::handle(&app, req);
+            }
+        });
+        base
+    }
+
+    fn get(url: &str) -> u16 {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let mut resp = agent.get(url).call().unwrap();
+        let _ = resp.body_mut().read_to_vec().unwrap();
+        resp.status().as_u16()
+    }
+
+    /// Unlisted paths `a`, `b`, … with NARs of `nar` bytes, `a` used
+    /// longest ago; returns their store hashes.
+    fn unlisted(store: &Store, now: SystemTime, names: &[char], nar: usize) -> Vec<String> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let (h, info, _) = object(c, &format!("pkg-{c}"));
+                let days = (names.len() - i) as u32;
+                put_path(store, &info, &vec![b'x'; nar], now - DAY * days);
+                h
+            })
+            .collect()
+    }
+
+    fn has_all(store: &Store, hashes: &[String]) -> Vec<bool> {
+        hashes
+            .iter()
+            .map(|h| store.narinfo_path(h).unwrap().exists())
+            .collect()
+    }
+
+    #[test]
+    fn eviction_goes_least_recently_used_first_down_to_ninety_percent() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("lru")).unwrap();
+        let h = unlisted(&store, now, &['a', 'b', 'c', 'd'], 10_000);
+        let narinfo = store.narinfo_files().unwrap()[0].2;
+        let total = 4 * (narinfo + 10_000);
+
+        // Under the cap: nothing goes, and the pass reports the class.
+        let lru = Lru::new(total);
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert!(r.evicted.is_empty() && r.orphans.is_empty());
+        assert_eq!(lru.bytes.load(Ordering::Relaxed), total);
+        assert_eq!(lru.paths.load(Ordering::Relaxed), 4);
+
+        // Over it: two paths take 90% of 30000 down from four.
+        let lru = Lru::new(30_000);
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(
+            r.evicted,
+            [
+                format!("{}.narinfo", h[0]),
+                format!("nar/{}.nar.xz", h[0]),
+                format!("{}.narinfo", h[1]),
+                format!("nar/{}.nar.xz", h[1]),
+            ]
+        );
+        assert_eq!(has_all(&store, &h), [false, false, true, true]);
+        assert!(!store.has(&h[0]) && store.has(&h[2]));
+        assert!(dangling(&store).is_empty());
+        assert_eq!(lru.bytes.load(Ordering::Relaxed), 2 * (narinfo + 10_000));
+        assert_eq!(lru.paths.load(Ordering::Relaxed), 2);
+        assert_eq!(lru.evicted.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            lru.evicted_bytes.load(Ordering::Relaxed),
+            2 * (narinfo + 10_000)
+        );
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn a_path_used_recently_is_not_evicted_and_that_survives_a_restart() {
+        let now = SystemTime::now();
+        let root = tmp("used");
+        let h = unlisted(&Store::open(&root).unwrap(), now, &['a', 'b', 'c'], 3);
+
+        // `a` is the least recently used, until a client reads it.
+        let base = serve(app(Store::open(&root).unwrap(), Some(Lru::new(1))));
+        assert_eq!(get(&format!("{base}/{}.narinfo", h[0])), 200);
+
+        // A new process, as after a restart, sees the use on disk.
+        let store = Store::open(&root).unwrap();
+        let r = evict(&store, SystemTime::now(), &Lru::new(1), &|_| false).unwrap();
+        assert_eq!(r.evicted.len(), 4, "evicted {:?}", r.evicted);
+        assert_eq!(has_all(&store, &h), [true, false, false]);
+
+        // Used longer ago than the recent window, it goes like the rest.
+        let r = evict(&store, now + RECENT + DAY, &Lru::new(1), &|_| false).unwrap();
+        assert_eq!(r.evicted.len(), 2);
+        assert_eq!(has_all(&store, &h), [false, false, false]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_record_use_only_under_a_cap_and_at_most_once_a_minute() {
+        let now = SystemTime::now();
+        let root = tmp("touch");
+        let h = unlisted(&Store::open(&root).unwrap(), now, &['a'], 3);
+        let narinfo = Store::open(&root).unwrap().narinfo_path(&h[0]).unwrap();
+        let mtime = || std::fs::metadata(&narinfo).unwrap().modified().unwrap();
+        let old = mtime();
+
+        // Without a cap a read changes nothing on disk.
+        let off = serve(app(Store::open(&root).unwrap(), None));
+        assert_eq!(get(&format!("{off}/{}.narinfo", h[0])), 200);
+        assert_eq!(mtime(), old);
+
+        // With one, a read of a file used a minute ago or more is recorded,
+        // a read of one used since is not.
+        let on = serve(app(Store::open(&root).unwrap(), Some(Lru::new(1))));
+        assert_eq!(get(&format!("{on}/{}.narinfo", h[0])), 200);
+        assert!(mtime() > now - crate::store::USE_RESOLUTION);
+        let within = SystemTime::now() - crate::store::USE_RESOLUTION / 2;
+        age(&narinfo, within);
+        assert_eq!(get(&format!("{on}/{}.narinfo", h[0])), 200);
+        assert!(mtime() < SystemTime::now() - crate::store::USE_RESOLUTION / 4);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn listed_paths_are_neither_evicted_nor_counted_until_they_leave() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("listed")).unwrap();
+        // Listed, and used longer ago than anything else.
+        let (hl, il, _) = object('l', "pkg-l");
+        put_path(&store, &il, b"NAR", now - DAY * 100);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{hl}-pkg-l")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+        let h = unlisted(&store, now, &['a', 'b'], 3);
+        let unlisted_bytes: u64 = store
+            .narinfo_files()
+            .unwrap()
+            .iter()
+            .filter(|(hash, _, _)| *hash != hl)
+            .map(|(_, _, size)| size + 3)
+            .sum();
+
+        let lru = Lru::new(1);
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(r.evicted.len(), 4);
+        assert_eq!(has_all(&store, &h), [false, false]);
+        assert!(store.has(&hl));
+        assert_eq!(lru.evicted_bytes.load(Ordering::Relaxed), unlisted_bytes);
+        assert_eq!(lru.paths.load(Ordering::Relaxed), 0);
+
+        // Its manifest dropped, the path is unlisted, with its old use.
+        store.remove_manifest("znix", "main-1-x").unwrap();
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(
+            r.evicted,
+            [format!("{hl}.narinfo"), format!("nar/{hl}.nar.xz")]
+        );
+        assert!(dangling(&store).is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn a_shared_nar_goes_with_the_last_narinfo_naming_it() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("shared")).unwrap();
+        let (ha, ia, na) = object('a', "pkg-a");
+        let (hb, ib, _) = object('b', "pkg-b");
+        let nar = format!("{ha}.nar.xz");
+        // `URL` is outside the signature, so the two still verify.
+        let ib = ib.replace(&format!("nar/{hb}.nar.xz"), &format!("nar/{nar}"));
+        put_path(&store, &ia, &na, now - DAY * 2);
+        put_path(&store, &ib, &na, now - DAY * 2);
+        // `b` read just now, through its narinfo.
+        age(&store.narinfo_path(&hb).unwrap(), now);
+
+        let lru = Lru::new(1);
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(r.evicted, [format!("{ha}.narinfo")]);
+        assert!(store.nar_path(&nar).unwrap().exists());
+        assert!(dangling(&store).is_empty());
+
+        let r = evict(&store, now + RECENT, &lru, &|_| false).unwrap();
+        assert_eq!(r.evicted, [format!("{hb}.narinfo"), format!("nar/{nar}")]);
+        assert!(store.narinfo_files().unwrap().is_empty());
+        assert!(store.nar_files().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn a_path_whose_nar_a_fetch_needs_stays_whole() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("busy")).unwrap();
+        let h = unlisted(&store, now, &['a', 'b'], 3);
+        let nar = format!("{}.nar.xz", h[0]);
+
+        // `a` is older, but a fetch produces or reuses its NAR: neither its
+        // narinfo nor its NAR goes, and `b` does instead.
+        let lru = Lru::new(1);
+        let r = evict(&store, now, &lru, &|file| file == nar).unwrap();
+        assert_eq!(
+            r.evicted,
+            [format!("{}.narinfo", h[1]), format!("nar/{}.nar.xz", h[1])]
+        );
+        assert_eq!(has_all(&store, &h), [true, false]);
+        assert!(store.nar_path(&nar).unwrap().exists());
+
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(
+            r.evicted,
+            [format!("{}.narinfo", h[0]), format!("nar/{nar}")]
+        );
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn a_nar_no_narinfo_names_goes_past_grace_unless_a_fetch_needs_it() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("orphan")).unwrap();
+        for (file, t) in [("old.nar.xz", now - DAY * 2), ("young.nar.xz", now)] {
+            store.put_nar(file, &b"X"[..]).unwrap();
+            age(&store.nar_path(file).unwrap(), t);
+        }
+        let lru = Lru::new(1);
+        let r = evict(&store, now, &lru, &|file| file == "old.nar.xz").unwrap();
+        assert!(r.orphans.is_empty());
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(r.orphans, ["nar/old.nar.xz"]);
+        assert!(store.nar_path("young.nar.xz").unwrap().exists());
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn no_narinfo_is_left_without_its_nar_when_a_writer_cuts_in() {
+        let now = SystemTime::now();
+        for writer in ["publish", "push", "read"] {
+            let store = Store::open(tmp("cut-in")).unwrap();
+            let (ha, ia, na) = object('a', "pkg-a");
+            put_path(&store, &ia, &na, now - DAY * 2);
+            let nar = format!("{ha}.nar.xz");
+            // Another path with the same NAR, written after the pass listed
+            // the store: by pull-through reusing the NAR, or by a push
+            // that skipped its upload. Or a client reads `a` meanwhile.
+            let (hb, ib, _) = object('b', "pkg-b");
+            let ib = ib.replace(&format!("nar/{hb}.nar.xz"), &format!("nar/{nar}"));
+            let info = NarInfo::parse(&ib).unwrap();
+            let r = evict_with(&store, now, &Lru::new(1), &|_| false, || match writer {
+                "publish" => {
+                    let published = store.publish_pulled(&info, ib.as_bytes(), None).unwrap();
+                    assert_eq!(published, crate::store::Published::Stored);
+                }
+                "push" => store.put_narinfo(&info, ib.as_bytes()).unwrap(),
+                _ => {
+                    let f = std::fs::File::open(store.narinfo_path(&ha).unwrap()).unwrap();
+                    crate::store::mark_used(&f);
+                }
+            })
+            .unwrap();
+            assert!(r.evicted.is_empty(), "{writer}: evicted {:?}", r.evicted);
+            assert!(store.nar_path(&nar).unwrap().exists(), "{writer}");
+            assert!(dangling(&store).is_empty(), "{writer}");
+            let _ = std::fs::remove_dir_all(&store.root);
+        }
+    }
+
+    #[test]
+    fn under_a_cap_the_sweep_leaves_unlisted_paths_to_eviction() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("sweep-lru")).unwrap();
+        let (hl, il, nl) = object('l', "pkg-l");
+        put_path(&store, &il, &nl, now - DAY * 2);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{hl}-pkg-l")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+        let h = unlisted(&store, now, &['a'], 3);
+        // A NAR no narinfo names, past grace, still goes.
+        store.put_nar("orphan.nar.xz", &b"X"[..]).unwrap();
+        age(&store.nar_path("orphan.nar.xz").unwrap(), now - DAY * 2);
+
+        let r = box_sweep(&store, now, GRACE, true).unwrap();
+        assert_eq!(r.deleted, ["nar/orphan.nar.xz"]);
+        assert!(store.has(&h[0]) && store.has(&hl));
+        // Without the cap the same store loses the unlisted path.
+        let r = box_sweep(&store, now, GRACE, false).unwrap();
+        let mut deleted = r.deleted.clone();
+        deleted.sort();
+        assert_eq!(
+            deleted,
+            [format!("{}.narinfo", h[0]), format!("nar/{}.nar.xz", h[0])]
+        );
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn a_box_without_remote_or_manifests_evicts_in_process() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("in-process")).unwrap();
+        let h = unlisted(&store, now, &['a', 'b', 'c'], 10_000);
+        let box_ = app(store, Some(Lru::new(15_000)));
+        let maintained = box_.clone();
+        std::thread::spawn(move || maintain(&maintained, Duration::from_millis(10)));
+        for _ in 0..500 {
+            if box_.lru.as_ref().unwrap().evicted.load(Ordering::Relaxed) == 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(has_all(&box_.store, &h), [false, false, true]);
+        assert!(box_.lru.as_ref().unwrap().bytes.load(Ordering::Relaxed) <= 15_000);
+        let _ = std::fs::remove_dir_all(&box_.store.root);
+    }
+
+    #[test]
+    fn a_failing_pass_fails_no_request_and_metrics_report_the_class() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("failing")).unwrap();
+        let h = unlisted(&store, now, &['a'], 3);
+        // A manifest that cannot be read fails every pass.
+        std::fs::create_dir_all(store.root.join("roots/znix/broken.json")).unwrap();
+        assert!(evict(&store, now, &Lru::new(1), &|_| false).is_err());
+
+        let box_ = app(store, Some(Lru::new(1)));
+        let maintained = box_.clone();
+        std::thread::spawn(move || maintain(&maintained, Duration::from_millis(10)));
+        let base = serve(box_.clone());
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(get(&format!("{base}/{}.narinfo", h[0])), 200);
+        assert_eq!(get(&format!("{base}/nar/{}.nar.xz", h[0])), 200);
+
+        // Readable again: a pass evicts nothing used just now, and the
+        // metrics say what is left.
+        std::fs::remove_dir(box_.store.root.join("roots/znix/broken.json")).unwrap();
+        let lru = box_.lru.as_ref().unwrap();
+        let r = evict(&box_.store, SystemTime::now(), lru, &|_| false).unwrap();
+        assert!(r.evicted.is_empty());
+        let size: u64 = box_.store.narinfo_files().unwrap()[0].2 + 3;
+        let agent = ureq::Agent::new_with_defaults();
+        let metrics = agent
+            .get(format!("{base}/metrics"))
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_to_string()
+            .unwrap();
+        for line in [
+            "# TYPE kasha_unlisted_bytes gauge".to_string(),
+            format!("kasha_unlisted_bytes {size}"),
+            "kasha_unlisted_paths 1".to_string(),
+            "# TYPE kasha_unlisted_evictions_total counter".to_string(),
+            "kasha_unlisted_evictions_total 0".to_string(),
+            "kasha_unlisted_evicted_bytes_total 0".to_string(),
+        ] {
+            assert!(
+                metrics.lines().any(|l| l == line),
+                "missing {line:?} in:\n{metrics}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&box_.store.root);
+    }
+
+    /// Make `dir` refuse new and removed entries; false when it does not,
+    /// as for root, and the test has nothing to show.
+    fn lock_dir(dir: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let probe = dir.join("probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(probe);
+            unlock_dir(dir);
+            return false;
+        }
+        true
+    }
+
+    fn unlock_dir(dir: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_nar_that_cannot_be_removed_stops_the_pass_and_fails_no_request() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("stuck")).unwrap();
+        let h = unlisted(&store, now, &['a', 'b', 'c'], 3);
+        let root = store.root.clone();
+        let base = serve(app(Store::open(&root).unwrap(), Some(Lru::new(1))));
+        if !lock_dir(&root.join("nar")) {
+            return;
+        }
+        let lru = Lru::new(1);
+        assert!(evict(&store, now, &lru, &|_| false).is_err());
+        unlock_dir(&root.join("nar"));
+        // One narinfo went before its NAR failed; the pass stopped there.
+        assert_eq!(has_all(&store, &h), [false, true, true]);
+        assert!(
+            store
+                .nar_path(&format!("{}.nar.xz", h[0]))
+                .unwrap()
+                .exists()
+        );
+        assert!(dangling(&store).is_empty());
+        assert_eq!(lru.evicted.load(Ordering::Relaxed), 1);
+        for key in [format!("{}.narinfo", h[1]), format!("nar/{}.nar.xz", h[1])] {
+            assert_eq!(get(&format!("{base}/{key}")), 200);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_sweep_that_cannot_remove_a_nar_leaves_no_narinfo_without_one() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("sweep-stuck")).unwrap();
+        let (hl, il, nl) = object('l', "pkg-l");
+        put_path(&store, &il, &nl, now);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{hl}-pkg-l")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+        let h = unlisted(&store, now, &['a', 'b'], 3);
+        if !lock_dir(&store.root.join("nar")) {
+            return;
+        }
+        let r = box_sweep(&store, now, GRACE, false);
+        unlock_dir(&store.root.join("nar"));
+        assert!(r.is_err());
+        assert_eq!(has_all(&store, &h), [false, false]);
+        assert!(dangling(&store).is_empty());
+        // Once it can, the next sweep takes the NARs left behind.
+        let r = box_sweep(&store, now, GRACE, false).unwrap();
+        assert_eq!(r.deleted.len(), 2, "deleted {:?}", r.deleted);
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn mirror_down_leaves_a_gap_when_eviction_takes_the_nar_it_saw() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("mirror-cut")).unwrap();
+        let h = unlisted(&store, now, &['a'], 3);
+        let nar = format!("{}.nar.xz", h[0]);
+        // Mirror-down sees the NAR stored and skips its download ...
+        assert!(store.nar_path(&nar).unwrap().is_file());
+        // ... an eviction pass removes the path ...
+        evict(&store, now, &Lru::new(1), &|_| false).unwrap();
+        // ... and the narinfo of another path naming that NAR is refused.
+        let (hb, ib, _) = object('b', "pkg-b");
+        let ib = ib.replace(&format!("nar/{hb}.nar.xz"), &format!("nar/{nar}"));
+        let info = NarInfo::parse(&ib).unwrap();
+        assert!(
+            store
+                .put_narinfo_of_stored_nar(&info, ib.as_bytes())
+                .is_err()
+        );
+        assert!(!store.has(&hb));
+        assert!(store.narinfo_files().unwrap().is_empty());
+        // A push may send its narinfo before the NAR, so it is taken.
+        store.put_narinfo(&info, ib.as_bytes()).unwrap();
+        assert!(store.has(&hb));
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn a_use_far_in_the_future_counts_as_old() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("future")).unwrap();
+        let h = unlisted(&store, now, &['a', 'b'], 3);
+        // `b` was used yesterday; `a` claims next week.
+        let (_, ia, na) = object('a', "pkg-a");
+        put_path(&store, &ia, &na, now + DAY * 7);
+        let lru = Lru::new(1);
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert_eq!(r.evicted.len(), 4, "evicted {:?}", r.evicted);
+        assert_eq!(has_all(&store, &h), [false, false]);
+
+        // A read rewrites a time in the future as now.
+        let (hc, ic, nc) = object('c', "pkg-c");
+        put_path(&store, &ic, &nc, now + DAY * 7);
+        let narinfo = store.narinfo_path(&hc).unwrap();
+        crate::store::mark_used(&std::fs::File::open(&narinfo).unwrap());
+        let mtime = std::fs::metadata(&narinfo).unwrap().modified().unwrap();
+        assert!(mtime < now + DAY);
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn head_and_nar_reads_count_as_use() {
+        let now = SystemTime::now();
+        let root = tmp("head");
+        let h = unlisted(&Store::open(&root).unwrap(), now, &['a', 'b', 'c'], 3);
+        let base = serve(app(Store::open(&root).unwrap(), Some(Lru::new(1))));
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let head = agent
+            .head(format!("{base}/{}.narinfo", h[0]))
+            .call()
+            .unwrap();
+        assert_eq!(head.status().as_u16(), 200);
+        assert_eq!(get(&format!("{base}/nar/{}.nar.xz", h[1])), 200);
+
+        let store = Store::open(&root).unwrap();
+        evict(&store, SystemTime::now(), &Lru::new(1), &|_| false).unwrap();
+        assert_eq!(has_all(&store, &h), [true, true, false]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_nar_a_listed_narinfo_also_names_is_neither_counted_nor_evicted() {
+        let now = SystemTime::now();
+        let store = Store::open(tmp("half-listed")).unwrap();
+        let (hl, il, nl) = object('l', "pkg-l");
+        let (hu, iu, _) = object('u', "pkg-u");
+        let nar = format!("{hl}.nar.xz");
+        let iu = iu.replace(&format!("nar/{hu}.nar.xz"), &format!("nar/{nar}"));
+        put_path(&store, &il, &vec![b'x'; 10_000], now - DAY * 2);
+        put_path(&store, &iu, &nl, now - DAY * 2);
+        let mb = manifest_at(
+            "main-1-x",
+            "main",
+            &[format!("/nix/store/{hl}-pkg-l")],
+            &ts(now, 0),
+        );
+        store
+            .put_manifest(&Manifest::parse(&mb).unwrap(), &mb)
+            .unwrap();
+        let unlisted_narinfo = std::fs::metadata(store.narinfo_path(&hu).unwrap())
+            .unwrap()
+            .len();
+
+        // Under a cap the unlisted narinfo alone fits, nothing goes.
+        let lru = Lru::new(unlisted_narinfo);
+        let r = evict(&store, now, &lru, &|_| false).unwrap();
+        assert!(r.evicted.is_empty());
+        assert_eq!(lru.bytes.load(Ordering::Relaxed), unlisted_narinfo);
+
+        // Over any cap, the narinfo goes and the NAR stays for `l`.
+        let r = evict(&store, now, &Lru::new(1), &|_| false).unwrap();
+        assert_eq!(r.evicted, [format!("{hu}.narinfo")]);
+        assert!(store.has(&hl) && store.nar_path(&nar).unwrap().exists());
+        assert!(dangling(&store).is_empty());
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    #[test]
+    fn passes_wait_for_bytes_or_undone_work() {
+        let max = 1000;
+        let min = Duration::from_secs(60);
+        // Early: received bytes could take the class over the cap.
+        assert!(pass_due(min, 101, false, 900, max));
+        assert!(!pass_due(min, 100, false, 900, max));
+        // Ended over the cap: early only after a tenth of it more.
+        assert!(!pass_due(min, 50, true, 1200, max));
+        assert!(pass_due(min, 101, true, 1200, max));
+        // Timed: only with something received or left undone.
+        assert!(!pass_due(PASS_EVERY, 0, false, 900, max));
+        assert!(pass_due(PASS_EVERY, 1, false, 900, max));
+        assert!(pass_due(PASS_EVERY, 0, true, 900, max));
+        // And hourly whatever happened.
+        assert!(pass_due(CLEAN_EVERY, 0, false, 0, max));
     }
 }

@@ -4,6 +4,11 @@
 NAR is stored as zstd, not as received: the box's narinfo always says `Compression: zstd`, and
 "its NAR still is" and the **Compression** paragraph no longer hold. The rest stands.
 
+**Partly superseded by [ADR-0013](0013-unlisted-paths-lru-size-cap.md)** — the rule for paths
+no retained manifest lists is decided there. With `KASHA_UNLISTED_MAX_BYTES` set, the gap the
+**Retention** paragraph describes is closed, with or without a remote cache; with it unset, the
+paragraph still holds.
+
 Supersedes parts of ADR-0001 (eager bidirectional replica, not a pull-through proxy) and
 ADR-0008 (single Rust binary), listed below. The eager replica itself and ADR-0004 (box
 holds no signing key) survive unchanged. Issue: #65. Nix behaviour is cited from its source

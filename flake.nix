@@ -2,9 +2,14 @@
   description = "kasha — net-local Nix binary cache";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs.crane.url = "github:ipetkov/crane";
 
   outputs =
-    { self, nixpkgs }:
+    { self
+    , nixpkgs
+    , crane
+    ,
+    }:
     let
       inherit (nixpkgs) lib;
       systems = [
@@ -22,39 +27,52 @@
             pkgs = nixpkgs.legacyPackages.${system};
           }
         );
-      # Shared by the package build and the lint checks below, so both draw the
-      # same vendored, network-free cargo registry from one place.
-      commonCargoArgs = {
-        version = (lib.importTOML ./Cargo.toml).package.version;
-        src = lib.fileset.toSource {
-          root = ./.;
-          fileset = lib.fileset.unions [
-            ./Cargo.toml
-            ./Cargo.lock
-            ./src
-          ];
-        };
-        cargoLock.lockFile = ./Cargo.lock;
+      src = lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./Cargo.toml
+          ./Cargo.lock
+          ./src
+        ];
       };
-      mkKasha = rustPlatform: rustPlatform.buildRustPackage (commonCargoArgs // { pname = "kasha"; });
-      # A lint check as a buildRustPackage derivation, not a plain runCommand: that's
-      # what gets the vendored offline registry cargoSetupHook already sets up for the
-      # package build, for free, instead of duplicating the vendoring by hand.
-      mkCargoLintCheck =
-        pkgs: name: command:
-        pkgs.rustPlatform.buildRustPackage (
-          commonCargoArgs
-          // {
-            pname = "kasha-${name}";
-            nativeBuildInputs = [
-              pkgs.clippy
-              pkgs.rustfmt
-            ];
-            buildPhase = command;
-            doCheck = false;
-            installPhase = "mkdir -p $out";
-          }
-        );
+      # Dependencies build in their own derivation from crane's dummy source.
+      # crane keeps kasha's own version in that source, so a release bump would
+      # still rebuild every dependency; it is stripped from the dummy Cargo.toml
+      # and Cargo.lock (both then read 0.0.0) so only kasha recompiles. Cargo.lock
+      # is left out of `depsSrc` because crane copies it from there verbatim.
+      version = (lib.importTOML ./Cargo.toml).package.version;
+      lockVersionLine = v: "name = \"kasha\"\nversion = \"${v}\"\n";
+      lock = builtins.readFile ./Cargo.lock;
+      depsLock = builtins.replaceStrings [ (lockVersionLine version) ] [ (lockVersionLine "0.0.0") ] lock;
+      depsSrc = lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./Cargo.toml
+          ./src
+        ];
+      };
+      mkCrane =
+        pkgs:
+        let
+          craneLib = crane.mkLib pkgs;
+          cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
+          cargoArtifacts =
+            assert lib.assertMsg (depsLock != lock) "kasha's version not found in Cargo.lock";
+            craneLib.buildDepsOnly {
+              pname = "kasha";
+              version = "0.0.0";
+              inherit cargoVendorDir;
+              dummySrc = craneLib.mkDummySrc {
+                src = depsSrc;
+                cargoLock = builtins.toFile "Cargo.lock" depsLock;
+                cleanCargoTomlFilter = path: craneLib.filters.cargoTomlDefault path && path != [ "package" "version" ];
+              };
+            };
+        in
+        {
+          inherit craneLib cargoArtifacts;
+          kasha = craneLib.buildPackage { inherit src cargoArtifacts cargoVendorDir; };
+        };
     in
     {
       nixosModules = {
@@ -65,7 +83,7 @@
       packages = forAllSystems (
         { system, pkgs }:
         {
-          kasha = mkKasha pkgs.rustPlatform;
+          kasha = (mkCrane pkgs).kasha;
           default = self.packages.${system}.kasha;
 
           # The binary this flake publishes to its cache for `system`, and the
@@ -104,7 +122,7 @@
         }
         // lib.optionalAttrs (lib.hasSuffix "linux" system) rec {
           # Static musl build: the only thing the OCI image ships.
-          kasha-static = mkKasha pkgs.pkgsStatic.rustPlatform;
+          kasha-static = (mkCrane pkgs.pkgsStatic).kasha;
           oci-image = pkgs.dockerTools.streamLayeredImage {
             name = "ghcr.io/zebradil/kasha-box";
             tag = "dev";
@@ -146,6 +164,7 @@
           # Test exactly the artefact the cache serves, never a sibling build of
           # the same source.
           tested = self.packages.${system}.kasha-bin;
+          inherit (mkCrane pkgs) craneLib cargoArtifacts;
         in
         {
           # cargo test runs in the package's checkPhase.
@@ -154,8 +173,11 @@
           # writeShellApplication shellchecks the script in its build.
           kasha-cache-push = self.packages.${system}.kasha-cache-push;
 
-          fmt = mkCargoLintCheck pkgs "fmt" "cargo fmt --all -- --check";
-          clippy = mkCargoLintCheck pkgs "clippy" "cargo clippy --all-targets --all-features -- -D warnings";
+          fmt = craneLib.cargoFmt { inherit src; };
+          clippy = craneLib.cargoClippy {
+            inherit src cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets --all-features -- -D warnings";
+          };
 
           actionlint =
             pkgs.runCommand "actionlint"

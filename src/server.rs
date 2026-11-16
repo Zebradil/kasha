@@ -893,7 +893,7 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
                 n(v)
             )?;
         }
-        let (pending, queued) = pull.gauges();
+        let (pending, queued, down) = pull.gauges();
         head(
             o,
             "kasha_pull_through_pending",
@@ -908,6 +908,13 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
             "Pending narinfos whose download has not started.",
         )?;
         writeln!(o, "kasha_pull_through_queued {queued}")?;
+        head(
+            o,
+            "kasha_pull_through_sources_down",
+            "gauge",
+            "Sources whose last narinfo request failed; lookups skip them for 30 s at a time.",
+        )?;
+        writeln!(o, "kasha_pull_through_sources_down {down}")?;
         head(
             o,
             "kasha_pull_through_lookup_duration_seconds",

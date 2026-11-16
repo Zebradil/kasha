@@ -52,6 +52,9 @@ pub struct Config {
     pub lookup_timeout: Duration,
     /// Bound on a NAR download that receives nothing.
     pub stall_timeout: Duration,
+    /// How long lookups skip a source whose narinfo request failed. Zero
+    /// never skips.
+    pub source_cooldown: Duration,
 }
 
 /// Maps an object key to the URL a source serves it at.
@@ -163,6 +166,9 @@ struct State {
     /// Store hashes no source had, with when that was learned.
     negative: HashMap<String, Instant>,
     negative_purged: Option<Instant>,
+    /// Sources whose last narinfo request failed, by index, with when a
+    /// lookup may ask one again.
+    down: HashMap<usize, Instant>,
     /// Narinfo requests held up by a lookup.
     lookup_waiters: usize,
     /// NAR requests waiting for a download.
@@ -263,10 +269,10 @@ impl Pull {
         Ok(pull)
     }
 
-    /// (pending narinfos, of which still queued).
-    pub fn gauges(&self) -> (usize, usize) {
+    /// (pending narinfos, of which still queued, sources marked down).
+    pub fn gauges(&self) -> (usize, usize, usize) {
         let st = self.state.lock().unwrap();
-        (st.pending.len(), st.queue.len())
+        (st.pending.len(), st.queue.len(), st.down.len())
     }
 
     /// Whether a fetch in flight produces or reuses the NAR `file`, so
@@ -393,9 +399,14 @@ impl Pull {
 
     /// Ask the sources in order. `Err(failed)` when none supplied the path;
     /// with `failed` set some source could not answer, so it is not a miss.
+    /// A source skipped as down could not answer either.
     fn lookup(&self, hash: &str) -> std::result::Result<Pending, bool> {
         let mut failed = false;
         for i in 0..self.sources.len() {
+            if !self.may_ask(i) {
+                failed = true;
+                continue;
+            }
             match self.probe(i, hash) {
                 Probe::Found(p) => return Ok(*p),
                 Probe::Miss => {}
@@ -405,10 +416,51 @@ impl Pull {
         Err(failed)
     }
 
+    /// Whether a lookup may ask source `i`. One marked down is skipped until
+    /// its cooldown ends; then one lookup tries it while the others go on
+    /// skipping, so a dead source costs a lookup timeout once per cooldown,
+    /// not on every lookup, and does not hold every lookup slot.
+    fn may_ask(&self, i: usize) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let Some(until) = st.down.get_mut(&i) else {
+            return true;
+        };
+        let now = Instant::now();
+        if now < *until {
+            return false;
+        }
+        *until = now + self.cfg.source_cooldown;
+        true
+    }
+
+    /// Record whether source `i` answered a narinfo request at all, a `404`
+    /// included. Only that marks it down: a narinfo the box refuses or cannot
+    /// verify is about one path, not the source.
+    fn mark(&self, i: usize, answered: bool) {
+        let source = self.sources[i].name.as_str();
+        let mut st = self.state.lock().unwrap();
+        if answered {
+            if st.down.remove(&i).is_some() {
+                tracing::info!(source, "source answers again");
+            }
+        } else if st
+            .down
+            .insert(i, Instant::now() + self.cfg.source_cooldown)
+            .is_none()
+        {
+            tracing::warn!(
+                source,
+                cooldown_secs = self.cfg.source_cooldown.as_secs(),
+                "source marked down, lookups skip it"
+            );
+        }
+    }
+
     fn probe(&self, i: usize, hash: &str) -> Probe {
         let source = self.sources[i].name.as_str();
         let start = Instant::now();
         let got = self.get_narinfo(i, hash);
+        self.mark(i, got.is_ok());
         self.stats
             .lookup_durations
             .lock()
@@ -1076,6 +1128,7 @@ Deriver: {hash}-pkg-{c}.drv\n",
             max_nar_waiters: 16,
             lookup_timeout: Duration::from_secs(5),
             stall_timeout: Duration::from_secs(5),
+            source_cooldown: Duration::from_secs(60),
         }
     }
 
@@ -1551,11 +1604,15 @@ Deriver: {hash}-pkg-{c}.drv\n",
         let narinfo = format!("{}.narinfo", o.hash);
         bad.broken.lock().unwrap().insert(narinfo.clone(), 500);
         let k = Kasha::pulling(&[&bad_base, &good_base], config());
+        let pull = k.app.pull.as_ref().unwrap();
 
         // One source fails, the other has nothing: not a definitive miss.
         assert_eq!(k.narinfo(&o).0, 404);
+        assert_eq!(pull.gauges().2, 1);
+        // Within its cooldown the failed source is skipped, and that is no
+        // definitive miss either.
         assert_eq!(k.narinfo(&o).0, 404);
-        assert_eq!(bad.asked(&format!("GET {narinfo}")), 2);
+        assert_eq!(bad.asked(&format!("GET {narinfo}")), 1);
         assert_eq!(good.asked(&format!("GET {narinfo}")), 2);
 
         // A failing source does not stop the next one from supplying it.
@@ -1563,6 +1620,31 @@ Deriver: {hash}-pkg-{c}.drv\n",
         assert_eq!(k.narinfo(&o).0, 200);
         k.settle();
         assert!(k.app.store.has(&o.hash));
+    }
+
+    #[test]
+    fn failed_source_is_asked_again_after_its_cooldown() {
+        let (up, base) = Upstream::start();
+        let o = object(&key(), 'a', "xz");
+        let narinfo = format!("{}.narinfo", o.hash);
+        up.add(&o);
+        up.broken.lock().unwrap().insert(narinfo.clone(), 503);
+        let cfg = Config {
+            source_cooldown: Duration::from_secs(1),
+            ..config()
+        };
+        let k = Kasha::pulling(&[&base], cfg);
+        let pull = k.app.pull.as_ref().unwrap();
+
+        assert_eq!(k.narinfo(&o).0, 404);
+        up.broken.lock().unwrap().clear();
+        assert_eq!(k.narinfo(&o).0, 404);
+        assert_eq!(up.asked(&format!("GET {narinfo}")), 1);
+        std::thread::sleep(Duration::from_millis(1100));
+        assert_eq!(k.narinfo(&o).0, 200);
+        assert_eq!(up.asked(&format!("GET {narinfo}")), 2);
+        assert_eq!(pull.gauges().2, 0);
+        k.settle();
     }
 
     #[test]
@@ -1574,6 +1656,8 @@ Deriver: {hash}-pkg-{c}.drv\n",
         let cfg = Config {
             lookup_timeout: Duration::from_secs(1),
             stall_timeout: Duration::from_secs(1),
+            // Not skipped as down afterwards, so it is asked again at once.
+            source_cooldown: Duration::ZERO,
             ..config()
         };
         let k = Kasha::pulling(&[&base], cfg);
@@ -2060,7 +2144,12 @@ CA: fixed:r:sha256:{nar_hash}\n",
         up.add(&failing);
         let broken = format!("{}.narinfo", failing.hash);
         up.broken.lock().unwrap().insert(broken.clone(), 500);
-        let k = Kasha::pulling(&[&base], config());
+        // Not skipped as down after its failure, so a later request asks it.
+        let cfg = Config {
+            source_cooldown: Duration::ZERO,
+            ..config()
+        };
+        let k = Kasha::pulling(&[&base], cfg);
         let pull = k.app.pull.as_ref().unwrap();
 
         // Three requests for `o` while the source holds its answer.

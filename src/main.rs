@@ -334,6 +334,9 @@ fn main() -> Result<()> {
                     max_nar_waiters: (max_inflight as usize / 4).max(1),
                     lookup_timeout: Duration::from_secs(pull_through_lookup_timeout_secs),
                     stall_timeout: Duration::from_secs(pull_through_stall_timeout_secs),
+                    // Long enough to spare lookups most timeouts of a dead
+                    // source, short enough that one that is back is soon used.
+                    source_cooldown: Duration::from_secs(30),
                 };
                 let sources = pull::sources(remote, &ups);
                 tracing::info!(sources = sources.len(), "pull-through enabled");

@@ -4,6 +4,11 @@
 NAR is stored as zstd, not as received: the box's narinfo always says `Compression: zstd`, and
 "its NAR still is" and the **Compression** paragraph no longer hold. The rest stands.
 
+**Partly superseded by [ADR-0016](0016-skip-failed-sources-for-a-cooldown.md)** — a source
+whose narinfo request fails is skipped by lookups for a cooldown: under **Failure
+behaviour**, "not remembered" no longer holds for a source that is down or slow. A lookup
+that skipped one is still no miss.
+
 **Partly superseded by [ADR-0013](0013-unlisted-paths-lru-size-cap.md)** — the rule for paths
 no retained manifest lists is decided there. With `KASHA_UNLISTED_MAX_BYTES` set, the gap the
 **Retention** paragraph describes is closed, with or without a remote cache; with it unset, the

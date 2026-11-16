@@ -47,8 +47,9 @@ Everything that does not end in a stored path is a `404`, which sends Nix to its
 
 - No source has the path. The box remembers that for `KASHA_PULL_THROUGH_NEGATIVE_TTL` seconds (60 by default) and
   answers without asking again.
-- A source is down or too slow, a NAR fails its check, or the disk is full. Nothing is remembered; the next request
-  tries again.
+- A source is down or too slow, a NAR fails its check, or the disk is full. No miss is remembered; the next request
+  tries again. A source whose narinfo request failed is skipped for 30 s, then one lookup tries it again, so a dead
+  source does not hold up every lookup for `KASHA_PULL_THROUGH_LOOKUP_TIMEOUT`.
 - More than `KASHA_PULL_THROUGH_MAX_PENDING` paths are answered but not stored yet.
 - A quarter of `KASHA_MAX_INFLIGHT` requests already wait on a narinfo lookup, or a quarter already wait for a NAR
   download. Each kind has its own cap, and the other half stays free for requests the store can answer.

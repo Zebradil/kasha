@@ -6658,6 +6658,82 @@
             }
           }
         }
+      },
+      "panel-62": {
+        "kind": "Panel",
+        "spec": {
+          "id": 62,
+          "title": "Sources marked down",
+          "description": "Pull-through sources whose last narinfo request failed (no answer, timeout or an error status other than 404). Lookups skip them and try one again every 30 s; each skip counts as a failed lookup. The logs name the source (source marked down, source answers again). ADR-0016.",
+          "links": [],
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "refId": "A",
+                    "hidden": false,
+                    "query": {
+                      "kind": "DataQuery",
+                      "group": "prometheus",
+                      "version": "v0",
+                      "datasource": {
+                        "name": "${datasource}"
+                      },
+                      "spec": {
+                        "expr": "max by (instance) (kasha_pull_through_sources_down{job=\"$job\", instance=~\"$instance\"})",
+                        "legendFormat": "{{instance}}"
+                      }
+                    }
+                  }
+                }
+              ],
+              "transformations": [],
+              "queryOptions": {}
+            }
+          },
+          "vizConfig": {
+            "kind": "VizConfig",
+            "group": "timeseries",
+            "version": "",
+            "spec": {
+              "options": {
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true,
+                  "calcs": []
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              },
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "custom": {
+                    "lineWidth": 1,
+                    "fillOpacity": 0,
+                    "showPoints": "never",
+                    "spanNulls": false,
+                    "axisSoftMin": 0,
+                    "lineInterpolation": "stepAfter"
+                  },
+                  "min": 0,
+                  "decimals": 0,
+                  "color": {
+                    "mode": "fixed",
+                    "fixedColor": "red"
+                  }
+                },
+                "overrides": []
+              }
+            }
+          }
+        }
       }
     },
     "layout": {
@@ -7162,6 +7238,19 @@
                                   "element": {
                                     "kind": "ElementReference",
                                     "name": "panel-59"
+                                  }
+                                }
+                              },
+                              {
+                                "kind": "GridLayoutItem",
+                                "spec": {
+                                  "x": 12,
+                                  "y": 24,
+                                  "width": 12,
+                                  "height": 8,
+                                  "element": {
+                                    "kind": "ElementReference",
+                                    "name": "panel-62"
                                   }
                                 }
                               }

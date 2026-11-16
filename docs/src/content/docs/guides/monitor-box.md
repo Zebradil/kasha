@@ -68,6 +68,7 @@ needs no authentication.
 | `kasha_pull_through_nar_waits_total{result}` | counter | NAR requests for a download in flight: `waited` (held until it ended) or `busy` (turned away with `404`: a quarter of `KASHA_MAX_INFLIGHT` requests already wait) |
 | `kasha_pull_through_fetches_total{result}` | counter | background fetches ended: `stored`, `failed` or `abandoned` (a push or mirror-down stored the path first) |
 | `kasha_pull_through_pending` | gauge | paths answered whose NAR is not stored yet |
+| `kasha_pull_through_sources_down` | gauge | sources whose last narinfo request failed; lookups skip them, trying one again every 30 s |
 | `kasha_pull_through_queued` | gauge | pending paths whose download has not started |
 | `kasha_pull_through_lookup_duration_seconds{source}` | histogram | time a source took to answer a narinfo lookup, whatever the answer; `source` is `remote` for the remote cache, else the upstream's host (no credentials) |
 
@@ -80,7 +81,8 @@ rescanned at most every 5 minutes. Byte counters move when a transfer completes,
 The `kasha_pull_through_*` metrics and the `pull` byte and stored counters exist only on a box with pull-through on. A narinfo
 answered by pull-through counts as a `hit` in `kasha_narinfo_requests_total`. A `kasha_pull_through_queued` that stays
 high means the downloads cannot keep up: raise `KASHA_PULL_THROUGH_WORKERS`. A rising `failed` count is explained in
-the logs (`narinfo lookup failed`, `pull-through fetch failed`). A rising `busy` count in either metric means consumers
+the logs (`narinfo lookup failed`, `pull-through fetch failed`); a source that fails is skipped until it answers
+again (`source marked down`, `source answers again`), and its skips count as `failed` too. A rising `busy` count in either metric means consumers
 are being sent away: raise `KASHA_MAX_INFLIGHT`.
 
 The `kasha_reencode_*` metrics exist only with `KASHA_REENCODE` on. A rising `failed` count names objects whose NAR does
@@ -167,7 +169,7 @@ A Grafana dashboard over these metrics ships in the repository as
 Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables. A strip of
 stats on top gives the selected boxes' worst values, coloured at the thresholds of the alerts above; tabs below hold the
 detail: **Clients** (lookups, hit ratio, bytes by route, pushes, responses by status, request duration and slots),
-**Pull-through** (including how long each source takes to answer), **Replication** (sync, gaps,
+**Pull-through** (including how long each source takes to answer and which are marked down), **Replication** (sync, gaps,
 generations, mirror-up) and **Storage** (contents, NAR age, encoding, re-encoder, box GC and the cap, one row each).
 Sections for a feature the selected boxes do not export, such as pull-through, a remote cache, the re-encoder or a cap,
 are hidden, as is the encoding row on boxes older than 0.13.0. The strip's **Version** stat shows which kasha each box

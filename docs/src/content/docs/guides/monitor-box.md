@@ -147,9 +147,16 @@ shows how much of the clients' demand the box serves itself.
 
 A Grafana dashboard over these metrics ships in the repository as
 [`deploy/grafana/kasha.json`](https://github.com/Zebradil/kasha/blob/main/deploy/grafana/kasha.json). It picks the
-Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables, and its
-thresholds match the alerts above. Rows for features a box does not use, such as pull-through or a cap, stay empty; the
-mirror, box GC and push row starts collapsed.
+Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables. A strip of
+stats on top gives the selected boxes' worst values, coloured at the thresholds of the alerts above; tabs below hold the
+detail: **Clients** (lookups, hit ratio, bytes by route, pushes), **Pull-through**, **Replication** (sync, gaps,
+generations, mirror-up) and **Storage** (contents, NAR age, encoding, re-encoder, box GC and the cap, one row each).
+Sections for a feature the selected boxes do not export, such as pull-through, a remote cache, the re-encoder or a cap,
+are hidden.
+
+The file is a Grafana v2 dashboard resource (`dashboard.grafana.app/v2`) with tabs, which needs dynamic dashboards (the
+`dashboardNewLayouts` feature toggle, on by default in Grafana 13). Import it under **Dashboards → New → Import**, or
+provision it from a file like any other dashboard; both were checked on Grafana 13.3.
 
 ## Tell healthy from stuck
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0](https://github.com/Zebradil/kasha/compare/v0.14.0...v0.15.0) (2026-11-16)
+
+
+### Features
+
+* **grafana:** tabbed v2 dashboard covering the re-encoder ([#143](https://github.com/Zebradil/kasha/issues/143)) ([5a8b9a5](https://github.com/Zebradil/kasha/commit/5a8b9a5d788a7f663287e6cdb7f3d057888065a2))
+* **nix:** add nixosModules.box ([#141](https://github.com/Zebradil/kasha/issues/141)) ([ff2d9a3](https://github.com/Zebradil/kasha/commit/ff2d9a362d6393aaab7e78fd2dce9e120d8856dc))
+
+
+### Documentation
+
+* use remote site.yaml schema URL ([#137](https://github.com/Zebradil/kasha/issues/137)) ([bec89f2](https://github.com/Zebradil/kasha/commit/bec89f222d5e11da16d6d6f8103562997e94d9ff))
+
 ## [0.14.0](https://github.com/Zebradil/kasha/compare/v0.13.0...v0.14.0) (2026-11-15)
 
 

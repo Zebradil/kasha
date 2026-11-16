@@ -15,6 +15,7 @@ remote cache.
 - `kasha sweep`: run one box sweep now (e.g. `kubectl exec` into a running box) and exit.
 - `nixosModules.consumer`: host-scoped static substituter selection — box first, remote cache second, low
   `connect-timeout`.
+- `nixosModules.box`: the box as a native systemd service, configured through the same environment contract.
 - `packages.<system>.kasha-cache-push`: the producer-side resolve → sign → push → emit script.
 - `packages.<system>.oci-image`: box OCI image (static binary only), published as `ghcr.io/zebradil/kasha-box`.
 

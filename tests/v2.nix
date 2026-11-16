@@ -17,33 +17,36 @@ let
   # Input-addressed path: substitution genuinely requires a trusted signature
   # (a content-addressed path would self-verify and make the sig gate vacuous).
   seed = pkgs.runCommand "kasha-seed" { } "echo hello-kasha-v2 > $out";
+  # Both boxes run through the NixOS module (modules/box.nix), so this test is
+  # also its test.
+  boxDefaults = {
+    enable = true;
+    package = kasha;
+    listen = "0.0.0.0:${toString port}";
+    trustedKeys = [ pk ];
+    openFirewall = true;
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "kasha-v2";
 
   nodes = {
     box = _: {
-      systemd.services.kasha = {
-        wantedBy = [ "multi-user.target" ];
-        serviceConfig = {
-          ExecStart = "${kasha}/bin/kasha serve --data /var/lib/kasha --listen 0.0.0.0:${toString port} --trusted-keys ${pk}";
-          Environment = [ "KASHA_TOKEN=${token}" ];
-          StateDirectory = "kasha";
-        };
+      imports = [ ../modules/box.nix ];
+      services.kasha-box = boxDefaults // {
+        environmentFile = pkgs.writeText "kasha.env" "KASHA_TOKEN=${token}";
       };
-      networking.firewall.allowedTCPPorts = [ port ];
     };
 
     # Pull-through box: no remote cache, no write token, one upstream.
     edge = _: {
-      systemd.services.kasha = {
-        wantedBy = [ "multi-user.target" ];
-        serviceConfig = {
-          ExecStart = "${kasha}/bin/kasha serve --data /var/lib/kasha --listen 0.0.0.0:${toString port} --trusted-keys ${pk} --pull-through --upstreams http://box:${toString port}";
-          StateDirectory = "kasha";
+      imports = [ ../modules/box.nix ];
+      services.kasha-box = boxDefaults // {
+        environment = {
+          KASHA_PULL_THROUGH = "true";
+          KASHA_UPSTREAMS = "http://box:${toString port}";
         };
       };
-      networking.firewall.allowedTCPPorts = [ port ];
     };
 
     pusher = _: {

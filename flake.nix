@@ -77,6 +77,10 @@
     {
       nixosModules = {
         consumer = import ./modules/consumer.nix;
+        box = { lib, pkgs, ... }: {
+          imports = [ ./modules/box.nix ];
+          services.kasha-box.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.kasha-bin;
+        };
         default = self.nixosModules.consumer;
       };
 

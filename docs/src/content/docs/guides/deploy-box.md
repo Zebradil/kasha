@@ -59,6 +59,31 @@ docker run -d -p 5000:5000 -v kasha-data:/kasha \
 The store is flat files with no database, so any storage class works for the volume. On k3s, run the box as an
 always-on workload with a stable `LoadBalancer` or `NodePort` address and its data on a PVC mounted at `/kasha`.
 
+### On NixOS, without a container
+
+`nixosModules.box` runs the same binary as `kasha.service`. The typed options set `KASHA_DATA`, `KASHA_LISTEN` and
+`KASHA_TRUSTED_KEYS`; `environment` takes any other knob, and `environmentFile` carries the secrets so they stay out
+of the Nix store:
+
+```nix
+{
+  imports = [ kasha.nixosModules.box ];
+
+  services.kasha-box = {
+    enable = true;
+    dataDir = "/srv/kasha";
+    trustedKeys = [ "znix.zebradil.dev:AAAA..." ];
+    environment.KASHA_REMOTE = "s3://znix-cache?endpoint=example.r2.cloudflarestorage.com&region=auto";
+    # KASHA_TOKEN=..., AWS_ACCESS_KEY_ID=..., AWS_SECRET_ACCESS_KEY=...
+    environmentFile = "/run/secrets/kasha.env";
+    openFirewall = true;
+  };
+}
+```
+
+`dataDir` becomes a btrfs subvolume where systemd-tmpfiles can make one, and the service waits for the mount that
+holds it, so a missing disk stops the box rather than filling the parent filesystem.
+
 ### Probes
 
 At boot the box reads every narinfo before it opens port 5000; on a network volume with a cold cache that takes

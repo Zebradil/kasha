@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/Zebradil/kasha/compare/v0.15.0...v0.16.0) (2026-11-16)
+
+
+### Features
+
+* **metrics:** export version, store filesystem, HTTP and lookup latency ([#144](https://github.com/Zebradil/kasha/issues/144)) ([b5f0d6a](https://github.com/Zebradil/kasha/commit/b5f0d6a8445de916acc5e1222ca115d0956e600f))
+
 ## [0.15.0](https://github.com/Zebradil/kasha/compare/v0.14.0...v0.15.0) (2026-11-16)
 
 

@@ -169,7 +169,7 @@ A Grafana dashboard over these metrics ships in the repository as
 Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables. A strip of
 stats on top gives the selected boxes' worst values, coloured at the thresholds of the alerts above; tabs below hold the
 detail: **Clients** (lookups, hit ratio, bytes by route, pushes, responses by status, request duration and slots),
-**Pull-through** (including how long each source takes to answer), **Replication** (sync, gaps,
+**Pull-through** (including how long each source takes to answer and which are marked down), **Replication** (sync, gaps,
 generations, mirror-up) and **Storage** (contents, NAR age, encoding, re-encoder, box GC and the cap, one row each).
 Sections for a feature the selected boxes do not export, such as pull-through, a remote cache, the re-encoder or a cap,
 are hidden, as is the encoding row on boxes older than 0.13.0. The strip's **Version** stat shows which kasha each box

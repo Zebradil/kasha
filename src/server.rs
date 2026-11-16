@@ -13,7 +13,7 @@
 //! gen local-origin for mirror-up.
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -55,6 +55,87 @@ pub struct Counters {
     /// NAR files stored by a push and by mirror-down, by their encoding.
     pub nars_ingested: ByCompression,
     pub nars_down: ByCompression,
+    pub http: Mutex<Http>,
+    /// Requests holding a slot, and the cap `serve` was started with (0
+    /// when the box does not serve, as in tests that call `handle`).
+    pub inflight: Arc<AtomicU64>,
+    pub max_inflight: AtomicU64,
+}
+
+/// Responses and their durations, by low-cardinality labels.
+#[derive(Default)]
+pub struct Http {
+    /// (method, route, code) -> responses.
+    responses: BTreeMap<(&'static str, &'static str, u16), u64>,
+    /// (method, route) -> handling time, from `handle` to the response written.
+    durations: BTreeMap<(&'static str, &'static str), Histogram>,
+}
+
+/// The `method` label; anything else a client sends is `other`.
+fn method_label(m: &Method) -> &'static str {
+    match m {
+        Method::Get => "GET",
+        Method::Head => "HEAD",
+        Method::Put => "PUT",
+        _ => "other",
+    }
+}
+
+/// The `route` label: what kind of object a path names, never the path, so a
+/// client cannot grow the series count.
+fn route_label(path: &str) -> &'static str {
+    match path {
+        "nix-cache-info" => "nix-cache-info",
+        "status" => "status",
+        "metrics" => "metrics",
+        _ if path.ends_with(".narinfo") => "narinfo",
+        _ if path.starts_with("nar/") => "nar",
+        _ if path.starts_with("roots/") => "manifest",
+        _ => "other",
+    }
+}
+
+/// The URL without its query and leading slash.
+fn url_path(url: &str) -> &str {
+    url.split('?').next().unwrap_or("").trim_start_matches('/')
+}
+
+/// Upper bounds of the duration buckets, in seconds: from a narinfo answered
+/// from the index to a large NAR sent to a slow client.
+const DURATION_BUCKETS: [f64; 14] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0,
+];
+
+/// A Prometheus histogram over `DURATION_BUCKETS`.
+#[derive(Default)]
+pub struct Histogram {
+    /// Per bound plus +Inf, non-cumulative.
+    counts: [u64; DURATION_BUCKETS.len() + 1],
+    sum: f64,
+}
+
+impl Histogram {
+    pub fn observe(&mut self, d: Duration) {
+        let s = d.as_secs_f64();
+        self.counts[DURATION_BUCKETS.partition_point(|&b| b < s)] += 1;
+        self.sum += s;
+    }
+
+    /// The `_bucket`, `_sum` and `_count` lines; `labels` are the series'
+    /// own, comma-separated, without braces.
+    fn write(&self, o: &mut String, name: &str, labels: &str) -> std::fmt::Result {
+        use std::fmt::Write;
+        let mut acc = 0;
+        for (i, c) in self.counts.iter().enumerate() {
+            acc += c;
+            let le = DURATION_BUCKETS
+                .get(i)
+                .map_or("+Inf".into(), f64::to_string);
+            writeln!(o, "{name}_bucket{{{labels},le=\"{le}\"}} {acc}")?;
+        }
+        writeln!(o, "{name}_sum{{{labels}}} {}", self.sum)?;
+        writeln!(o, "{name}_count{{{labels}}} {acc}")
+    }
 }
 
 /// Values of the `compression` label: what the box can decode, and the rest.
@@ -230,7 +311,10 @@ pub fn serve(
         objects = app.store.len(),
         "kasha serving"
     );
-    let slots = Arc::new(Slots::new(max_inflight));
+    app.counters
+        .max_inflight
+        .store(max_inflight as u64, Ordering::Relaxed);
+    let slots = Arc::new(Slots::new(max_inflight, app.counters.inflight.clone()));
     let mut failures = 0u32;
     loop {
         let req = match server.recv() {
@@ -277,14 +361,17 @@ struct Slots {
     used: Mutex<usize>,
     freed: Condvar,
     max: usize,
+    /// Mirrors `used` for /metrics, which cannot reach the slots.
+    gauge: Arc<AtomicU64>,
 }
 
 impl Slots {
-    fn new(max: usize) -> Self {
+    fn new(max: usize, gauge: Arc<AtomicU64>) -> Self {
         Slots {
             used: Mutex::new(0),
             freed: Condvar::new(),
             max: max.max(1),
+            gauge,
         }
     }
 
@@ -294,6 +381,7 @@ impl Slots {
             .wait_while(self.used.lock().unwrap(), |used| *used >= self.max)
             .unwrap();
         *used += 1;
+        self.gauge.store(*used as u64, Ordering::Relaxed);
         Slot(Arc::clone(self))
     }
 }
@@ -303,16 +391,26 @@ struct Slot(Arc<Slots>);
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        *self.0.used.lock().unwrap() -= 1;
+        let mut used = self.0.used.lock().unwrap();
+        *used -= 1;
+        self.0.gauge.store(*used as u64, Ordering::Relaxed);
         self.0.freed.notify_one();
     }
 }
 
 /// Returns whether the response reached the client.
-fn respond<R: Read>(req: Request, resp: Response<R>) -> bool {
+fn respond<R: Read>(app: &App, req: Request, resp: Response<R>) -> bool {
     let method = req.method().clone();
     let url = req.url().to_string();
     let code = resp.status_code().0;
+    let key = (method_label(&method), route_label(url_path(&url)), code);
+    *app.counters
+        .http
+        .lock()
+        .unwrap()
+        .responses
+        .entry(key)
+        .or_default() += 1;
     let sent = match req.respond(resp) {
         Ok(()) => true,
         Err(e) => {
@@ -328,9 +426,23 @@ fn text(code: u32, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(body).with_status_code(code as u16)
 }
 
-pub fn handle(app: &App, mut req: Request) {
+pub fn handle(app: &App, req: Request) {
+    let start = Instant::now();
+    let key = (method_label(req.method()), route_label(url_path(req.url())));
+    dispatch(app, req);
+    app.counters
+        .http
+        .lock()
+        .unwrap()
+        .durations
+        .entry(key)
+        .or_default()
+        .observe(start.elapsed());
+}
+
+fn dispatch(app: &App, mut req: Request) {
     let url = req.url().to_string();
-    let path = url.split('?').next().unwrap_or("").trim_start_matches('/');
+    let path = url_path(&url);
     match req.method() {
         Method::Get | Method::Head => respond_get(app, req, path),
         Method::Put => {
@@ -342,23 +454,23 @@ pub fn handle(app: &App, mut req: Request) {
                 let resp = text(401, "unauthorized").with_header(
                     Header::from_bytes("WWW-Authenticate", "Basic realm=\"kasha\"").unwrap(),
                 );
-                respond(req, resp);
+                respond(app, req, resp);
                 return;
             }
             match ingest(app, &mut req, path) {
                 Ok(msg) => {
                     bump(&app.counters.ingest_accepted);
-                    respond(req, text(201, &msg));
+                    respond(app, req, text(201, &msg));
                 }
                 Err(e) => {
                     tracing::warn!(path, error = %e, "rejected ingest");
                     bump(&app.counters.ingest_rejected);
-                    respond(req, text(400, &format!("{e:#}")));
+                    respond(app, req, text(400, &format!("{e:#}")));
                 }
             }
         }
         _ => {
-            respond(req, text(405, "method not allowed"));
+            respond(app, req, text(405, "method not allowed"));
         }
     }
 }
@@ -370,7 +482,7 @@ fn respond_get(app: &App, req: Request, path: &str) {
                 "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: {}\n",
                 app.priority
             );
-            respond(req, text(200, &info));
+            respond(app, req, text(200, &info));
             return;
         }
         "status" => {
@@ -386,7 +498,7 @@ fn respond_get(app: &App, req: Request, path: &str) {
             });
             let resp = Response::from_string(body.to_string())
                 .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
-            respond(req, resp);
+            respond(app, req, resp);
             return;
         }
         "metrics" => {
@@ -395,7 +507,7 @@ fn respond_get(app: &App, req: Request, path: &str) {
             let resp = Response::from_string(body).with_header(
                 Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap(),
             );
-            respond(req, resp);
+            respond(app, req, resp);
             return;
         }
         _ => {}
@@ -422,7 +534,7 @@ fn respond_get(app: &App, req: Request, path: &str) {
         });
     }
     if let Some(narinfo) = pending {
-        respond(req, text(200, &narinfo));
+        respond(app, req, text(200, &narinfo));
         return;
     }
     // Only NAR bodies count as served bytes; narinfos are noise next to them.
@@ -436,17 +548,17 @@ fn respond_get(app: &App, req: Request, path: &str) {
                     crate::store::mark_used(&f);
                 }
                 let len = f.metadata().map_or(0, |m| m.len());
-                if respond(req, Response::from_file(f)) && nar {
+                if respond(app, req, Response::from_file(f)) && nar {
                     app.counters.bytes_served.fetch_add(len, Ordering::Relaxed);
                 }
             }
             Err(e) => {
                 tracing::error!(path, error = %e, "open failed");
-                respond(req, text(500, "io error"));
+                respond(app, req, text(500, "io error"));
             }
         },
         None => {
-            respond(req, text(404, "not found"));
+            respond(app, req, text(404, "not found"));
         }
     }
 }
@@ -463,8 +575,87 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
     let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
     let c = &app.counters;
 
+    head(
+        o,
+        "kasha_build_info",
+        "gauge",
+        "Always 1; the version label is the running kasha's.",
+    )?;
+    writeln!(
+        o,
+        "kasha_build_info{{version=\"{}\"}} 1",
+        env!("CARGO_PKG_VERSION")
+    )?;
+
     head(o, "kasha_objects", "gauge", "Narinfos in the box's index.")?;
     writeln!(o, "kasha_objects {}", app.store.len())?;
+
+    match app.store.filesystem() {
+        Ok((size, avail)) => {
+            for (name, help, v) in [
+                (
+                    "kasha_store_filesystem_size_bytes",
+                    "Size of the filesystem holding the store root.",
+                    size,
+                ),
+                (
+                    "kasha_store_filesystem_avail_bytes",
+                    "Bytes of the filesystem holding the store root that the box can still write.",
+                    avail,
+                ),
+            ] {
+                head(o, name, "gauge", help)?;
+                writeln!(o, "{name} {v}")?;
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "statvfs of the store root failed"),
+    }
+
+    {
+        let http = c.http.lock().unwrap();
+        head(
+            o,
+            "kasha_http_responses_total",
+            "counter",
+            "Responses by method, route (narinfo, nar, manifest, nix-cache-info, status, metrics, other) and status code.",
+        )?;
+        for ((method, route, code), v) in &http.responses {
+            writeln!(
+                o,
+                "kasha_http_responses_total{{method=\"{method}\",route=\"{route}\",code=\"{code}\"}} {v}"
+            )?;
+        }
+        head(
+            o,
+            "kasha_http_request_duration_seconds",
+            "histogram",
+            "Time from taking a request on to its response written, by method and route: pull-through waits and the transfer to the client included, waiting for a slot not.",
+        )?;
+        for ((method, route), h) in &http.durations {
+            h.write(
+                o,
+                "kasha_http_request_duration_seconds",
+                &format!("method=\"{method}\",route=\"{route}\""),
+            )?;
+        }
+    }
+    let max_inflight = n(&c.max_inflight);
+    if max_inflight > 0 {
+        head(
+            o,
+            "kasha_http_inflight_requests",
+            "gauge",
+            "Requests holding one of the KASHA_MAX_INFLIGHT slots.",
+        )?;
+        writeln!(o, "kasha_http_inflight_requests {}", n(&c.inflight))?;
+        head(
+            o,
+            "kasha_http_max_inflight_requests",
+            "gauge",
+            "The cap on requests in flight (KASHA_MAX_INFLIGHT).",
+        )?;
+        writeln!(o, "kasha_http_max_inflight_requests {max_inflight}")?;
+    }
 
     {
         let st = app.status.lock().unwrap();
@@ -717,6 +908,19 @@ fn metrics(app: &App, o: &mut String) -> std::fmt::Result {
             "Pending narinfos whose download has not started.",
         )?;
         writeln!(o, "kasha_pull_through_queued {queued}")?;
+        head(
+            o,
+            "kasha_pull_through_lookup_duration_seconds",
+            "histogram",
+            "Narinfo lookups on a source, by source (remote: the remote cache, else the upstream's host), whatever the answer.",
+        )?;
+        for (source, h) in p.lookup_durations.lock().unwrap().iter() {
+            h.write(
+                o,
+                "kasha_pull_through_lookup_duration_seconds",
+                &format!("source=\"{}\"", label(source)),
+            )?;
+        }
     }
 
     if let Some(r) = &app.reencode {
@@ -947,8 +1151,10 @@ References: \n";
     #[test]
     fn slots_bound_concurrency_and_release_on_drop() {
         use std::time::Duration;
-        let slots = Arc::new(Slots::new(1));
+        let gauge = Arc::new(AtomicU64::new(0));
+        let slots = Arc::new(Slots::new(1, gauge.clone()));
         let held = slots.acquire();
+        assert_eq!(gauge.load(Ordering::Relaxed), 1);
         let (tx, rx) = std::sync::mpsc::channel();
         let waiting = Arc::clone(&slots);
         std::thread::spawn(move || {
@@ -962,6 +1168,53 @@ References: \n";
         drop(held);
         rx.recv_timeout(Duration::from_secs(5))
             .expect("dropping a slot did not release it");
+        // The waiter took the freed slot and has dropped it again.
+        eventually_zero(&gauge);
+    }
+
+    fn eventually_zero(gauge: &AtomicU64) {
+        for _ in 0..250 {
+            if gauge.load(Ordering::Relaxed) == 0 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("in-flight gauge stuck at {}", gauge.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn histogram_writes_cumulative_buckets_sum_and_count() {
+        let mut h = Histogram::default();
+        for ms in [1, 200, 1_000_000] {
+            h.observe(Duration::from_millis(ms));
+        }
+        let mut o = String::new();
+        h.write(&mut o, "x", "a=\"b\"").unwrap();
+        for line in [
+            "x_bucket{a=\"b\",le=\"0.005\"} 1",
+            "x_bucket{a=\"b\",le=\"0.1\"} 1",
+            "x_bucket{a=\"b\",le=\"0.25\"} 2",
+            "x_bucket{a=\"b\",le=\"300\"} 2",
+            "x_bucket{a=\"b\",le=\"+Inf\"} 3",
+            "x_sum{a=\"b\"} 1000.201",
+            "x_count{a=\"b\"} 3",
+        ] {
+            assert!(o.lines().any(|l| l == line), "missing {line:?} in:\n{o}");
+        }
+    }
+
+    #[test]
+    fn route_label_never_carries_the_path() {
+        for (path, route) in [
+            ("abc.narinfo", "narinfo"),
+            ("nar/x.nar.zst", "nar"),
+            ("roots/f/g.json", "manifest"),
+            ("metrics", "metrics"),
+            ("anything/else", "other"),
+        ] {
+            assert_eq!(route_label(path), route);
+        }
+        assert_eq!(url_path("/a.narinfo?x=1"), "a.narinfo");
     }
 
     #[test]
@@ -1119,13 +1372,18 @@ References: \n";
         );
         // Served bytes are counted after the response is written, so the NAR
         // GET's handler can still be finishing when the client has its body.
+        // Durations too, recorded once the response is out.
         let served = "kasha_nar_bytes_total{direction=\"served\"} 8";
+        let nar_gets = "kasha_http_request_duration_seconds_count{method=\"GET\",route=\"nar\"} 2";
         let mut m = String::new();
         for _ in 0..50 {
             let resp = agent.get(format!("{base}/metrics")).call().unwrap();
             assert_eq!(resp.status(), 200);
             m = resp.into_body().read_to_string().unwrap();
-            if m.lines().any(|l| l == served) {
+            if [served, nar_gets]
+                .iter()
+                .all(|w| m.lines().any(|l| l == *w))
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1160,11 +1418,43 @@ References: \n";
             "kasha_nar_compression_objects{compression=\"xz\"} 2",
             "kasha_nar_compression_objects{compression=\"zstd\"} 0",
             "kasha_nar_compression_bytes{compression=\"xz\"} 9",
+            &format!(
+                "kasha_build_info{{version=\"{}\"}} 1",
+                env!("CARGO_PKG_VERSION")
+            ),
+            "# TYPE kasha_http_responses_total counter",
+            "kasha_http_responses_total{method=\"GET\",route=\"nix-cache-info\",code=\"200\"} 1",
+            "kasha_http_responses_total{method=\"GET\",route=\"narinfo\",code=\"200\"} 1",
+            "kasha_http_responses_total{method=\"GET\",route=\"narinfo\",code=\"404\"} 1",
+            "kasha_http_responses_total{method=\"PUT\",route=\"narinfo\",code=\"201\"} 1",
+            "kasha_http_responses_total{method=\"PUT\",route=\"narinfo\",code=\"400\"} 1",
+            "kasha_http_responses_total{method=\"PUT\",route=\"narinfo\",code=\"401\"} 1",
+            "kasha_http_responses_total{method=\"PUT\",route=\"nar\",code=\"201\"} 2",
+            "kasha_http_responses_total{method=\"PUT\",route=\"manifest\",code=\"201\"} 1",
+            "kasha_http_responses_total{method=\"GET\",route=\"nar\",code=\"200\"} 1",
+            "kasha_http_responses_total{method=\"GET\",route=\"nar\",code=\"404\"} 1",
+            "kasha_http_responses_total{method=\"GET\",route=\"status\",code=\"200\"} 1",
+            "# TYPE kasha_http_request_duration_seconds histogram",
+            nar_gets,
+            "kasha_http_request_duration_seconds_bucket{method=\"GET\",route=\"nar\",le=\"+Inf\"} 2",
+            "# TYPE kasha_store_filesystem_size_bytes gauge",
+            "# TYPE kasha_store_filesystem_avail_bytes gauge",
         ] {
             assert!(m.lines().any(|l| l == line), "missing {line:?} in:\n{m}");
         }
         assert!(!m.contains("direction=\"pull\",compression"));
         assert!(!m.contains("kasha_last_sweep_timestamp_seconds"));
+        // `handle` without `serve` has no slots to report.
+        assert!(!m.contains("kasha_http_inflight_requests"));
+        let fs = |name: &str| -> u64 {
+            let line = m
+                .lines()
+                .find(|l| l.starts_with(&format!("{name} ")))
+                .unwrap();
+            line.split(' ').nth(1).unwrap().parse().unwrap()
+        };
+        let size = fs("kasha_store_filesystem_size_bytes");
+        assert!(size > 0 && fs("kasha_store_filesystem_avail_bytes") <= size);
         assert!(m.contains("kasha_nar_oldest_timestamp_seconds "));
 
         let _ = std::fs::remove_dir_all(&dir);

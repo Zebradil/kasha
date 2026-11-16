@@ -22,7 +22,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -64,6 +64,24 @@ pub struct Source {
     /// The remote cache rather than an upstream cache, for byte accounting.
     remote: bool,
     url: UrlFn,
+}
+
+impl Source {
+    /// The `source` label: `remote`, or the upstream's host without any
+    /// credentials its URL carries, since /metrics needs no authentication.
+    fn label(&self) -> &str {
+        if self.remote {
+            return "remote";
+        }
+        let rest = self
+            .name
+            .split_once("://")
+            .map_or(self.name.as_str(), |(_, r)| r);
+        let authority = rest.split('/').next().unwrap_or(rest);
+        authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host)
+    }
 }
 
 /// The sources in the order they are asked: the remote cache when the box has
@@ -108,6 +126,8 @@ pub struct Stats {
     pub bytes_upstream: AtomicU64,
     /// NARs downloaded and stored, by the source's encoding.
     pub nars_stored: crate::server::ByCompression,
+    /// Narinfo lookup time per source, by `Source::label`.
+    pub lookup_durations: Mutex<BTreeMap<String, crate::server::Histogram>>,
 }
 
 fn bump(c: &AtomicU64) {
@@ -387,7 +407,16 @@ impl Pull {
 
     fn probe(&self, i: usize, hash: &str) -> Probe {
         let source = self.sources[i].name.as_str();
-        let raw = match self.get_narinfo(i, hash) {
+        let start = Instant::now();
+        let got = self.get_narinfo(i, hash);
+        self.stats
+            .lookup_durations
+            .lock()
+            .unwrap()
+            .entry(self.sources[i].label().to_string())
+            .or_default()
+            .observe(start.elapsed());
+        let raw = match got {
             Ok(Some(raw)) => raw,
             Ok(None) => return Probe::Miss,
             Err(e) => {
@@ -1921,8 +1950,26 @@ Deriver: {hash}-pkg-{c}.drv\n",
     }
 
     #[test]
+    fn source_label_is_remote_or_the_upstream_host_without_credentials() {
+        let remote: UrlFn = Box::new(|k| format!("https://presigned.example/{k}?sig=secret"));
+        let ups = [
+            "https://user:token@cache.example.org:8443/sub".to_string(),
+            "https://cache.nixos.org".to_string(),
+        ];
+        let labels: Vec<_> = sources(Some(remote), &ups)
+            .iter()
+            .map(|s| s.label().to_string())
+            .collect();
+        assert_eq!(
+            labels,
+            ["remote", "cache.example.org:8443", "cache.nixos.org"]
+        );
+    }
+
+    #[test]
     fn configured_priority_and_metrics_are_served() {
         let (up, base) = Upstream::start();
+        let host = base.trim_start_matches("http://").to_string();
         let o = object(&key(), 'a', "xz");
         up.add(&o);
         let k = Kasha::start(Some(sources(None, &[base])), config(), 30);
@@ -1945,6 +1992,7 @@ Deriver: {hash}-pkg-{c}.drv\n",
                 "kasha_nar_bytes_total{{direction=\"pull\",source=\"upstream\"}} {}",
                 o.file.len()
             ),
+            format!("kasha_pull_through_lookup_duration_seconds_count{{source=\"{host}\"}} 2"),
         ] {
             assert!(
                 metrics.lines().any(|l| l == line),

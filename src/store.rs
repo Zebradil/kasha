@@ -683,6 +683,24 @@ impl Store {
         }
     }
 
+    /// Size of the filesystem holding the store root, and the bytes on it an
+    /// unprivileged writer can still use.
+    pub fn filesystem(&self) -> std::io::Result<(u64, u64)> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(self.root.as_os_str().as_bytes())?;
+        let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: `path` is NUL-terminated and statvfs fills `st` when it
+        // returns 0, the only case `st` is read in.
+        if unsafe { libc::statvfs(path.as_ptr(), st.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let st = unsafe { st.assume_init() };
+        // fsblkcnt_t and the block size are u32 on Darwin, u64 on Linux.
+        #[allow(clippy::unnecessary_cast)]
+        let (blocks, avail, frsize) = (st.f_blocks as u64, st.f_bavail as u64, st.f_frsize as u64);
+        Ok((blocks * frsize, avail * frsize))
+    }
+
     /// Total bytes under the store root (walked; called from /status only).
     pub fn disk_usage(&self) -> u64 {
         fn walk(dir: &Path) -> u64 {

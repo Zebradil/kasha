@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/Zebradil/kasha/compare/v0.16.0...v0.17.0) (2026-11-16)
+
+
+### Features
+
+* **pull:** skip a failed source for a cooldown ([#146](https://github.com/Zebradil/kasha/issues/146)) ([a9029cb](https://github.com/Zebradil/kasha/commit/a9029cbeb0c63dcd283460c9e67353605aced31b))
+
 ## [0.16.0](https://github.com/Zebradil/kasha/compare/v0.15.0...v0.16.0) (2026-11-16)
 
 

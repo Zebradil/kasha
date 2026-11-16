@@ -33,7 +33,14 @@ needs no authentication.
 
 | Metric | Type | Meaning |
 | --- | --- | --- |
+| `kasha_build_info{version}` | gauge | always `1`; `version` is the running kasha's |
 | `kasha_objects` | gauge | narinfos in the box's index |
+| `kasha_store_filesystem_size_bytes` | gauge | size of the filesystem holding the store root |
+| `kasha_store_filesystem_avail_bytes` | gauge | bytes of that filesystem the box can still write (`statvfs` `f_bavail`); other data on it counts too |
+| `kasha_http_responses_total{method,route,code}` | counter | responses: `method` is `GET`, `HEAD`, `PUT` or `other`; `route` is `narinfo`, `nar`, `manifest`, `nix-cache-info`, `status`, `metrics` or `other`; `code` is the HTTP status |
+| `kasha_http_request_duration_seconds{method,route}` | histogram | time from taking a request on to its response written: pull-through waits and the transfer to the client count, waiting for a free slot does not |
+| `kasha_http_inflight_requests` | gauge | requests holding one of the `KASHA_MAX_INFLIGHT` slots |
+| `kasha_http_max_inflight_requests` | gauge | the cap, `KASHA_MAX_INFLIGHT` |
 | `kasha_pending_mirror_up` | gauge | same as `pending_mirror_up` in `/status` |
 | `kasha_flake_last_sync_timestamp_seconds{flake}` | gauge | `last_sync` in `/status`, as Unix seconds |
 | `kasha_flake_gaps{flake}` | gauge | `gaps` in `/status` |
@@ -62,6 +69,7 @@ needs no authentication.
 | `kasha_pull_through_fetches_total{result}` | counter | background fetches ended: `stored`, `failed` or `abandoned` (a push or mirror-down stored the path first) |
 | `kasha_pull_through_pending` | gauge | paths answered whose NAR is not stored yet |
 | `kasha_pull_through_queued` | gauge | pending paths whose download has not started |
+| `kasha_pull_through_lookup_duration_seconds{source}` | histogram | time a source took to answer a narinfo lookup, whatever the answer; `source` is `remote` for the remote cache, else the upstream's host (no credentials) |
 
 Counters start at zero when the box restarts. `store_bytes` has no metric: it walks the whole store, which is too
 costly to repeat on every scrape; read it from `/status`. The NAR age and compression metrics read only `nar/` and are
@@ -135,12 +143,21 @@ groups:
       - alert: KashaUnlistedOverCap
         expr: kasha_unlisted_bytes > kasha_unlisted_max_bytes
         for: 30m
+      - alert: KashaStoreFilesystemLow
+        expr: kasha_store_filesystem_avail_bytes / kasha_store_filesystem_size_bytes < 0.1
+        for: 15m
 ```
 
 `KashaPullThroughBusy` means clients were sent away: raise `KASHA_MAX_INFLIGHT` (`busy`) or
 `KASHA_PULL_THROUGH_MAX_PENDING` (`capped`). `KashaPullThroughBacklog` means the download queue has not drained for
 30 minutes: raise `KASHA_PULL_THROUGH_WORKERS` or look for a slow source. `KashaUnlistedOverCap` means paths used in the
-last 10 minutes alone exceed the cap: raise it.
+last 10 minutes alone exceed the cap: raise it. `KashaStoreFilesystemLow` means the store's filesystem is 90 % full:
+grow it, or lower `KASHA_UNLISTED_MAX_BYTES` on a box with pull-through.
+
+The `kasha_http_inflight_requests` gauges exist only once the box serves. A request holds its slot for the whole
+transfer, so the gauge rises with slow clients as well as with many; at the cap new requests wait. A narinfo `GET` that
+answers `404` is a miss; a NAR `GET` that answers `404` after its narinfo answered `200` is a NAR the box promised and
+could not serve, or one pull-through turned away (`busy`).
 
 The narinfo hit ratio, `rate(kasha_narinfo_requests_total{result="hit"}[1h]) / rate(kasha_narinfo_requests_total[1h])`,
 shows how much of the clients' demand the box serves itself.
@@ -149,10 +166,12 @@ A Grafana dashboard over these metrics ships in the repository as
 [`deploy/grafana/kasha.json`](https://github.com/Zebradil/kasha/blob/main/deploy/grafana/kasha.json). It picks the
 Prometheus data source, the scrape `job` and one or more of its boxes (`instance`) from dashboard variables. A strip of
 stats on top gives the selected boxes' worst values, coloured at the thresholds of the alerts above; tabs below hold the
-detail: **Clients** (lookups, hit ratio, bytes by route, pushes), **Pull-through**, **Replication** (sync, gaps,
+detail: **Clients** (lookups, hit ratio, bytes by route, pushes, responses by status, request duration and slots),
+**Pull-through** (including how long each source takes to answer), **Replication** (sync, gaps,
 generations, mirror-up) and **Storage** (contents, NAR age, encoding, re-encoder, box GC and the cap, one row each).
 Sections for a feature the selected boxes do not export, such as pull-through, a remote cache, the re-encoder or a cap,
-are hidden.
+are hidden, as is the encoding row on boxes older than 0.13.0. The strip's **Version** stat shows which kasha each box
+runs.
 
 The file is a Grafana v2 dashboard resource (`dashboard.grafana.app/v2`) with tabs, which needs dynamic dashboards (the
 `dashboardNewLayouts` feature toggle, on by default in Grafana 13). Import it under **Dashboards → New → Import**, or

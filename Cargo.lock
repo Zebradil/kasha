@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "kasha"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "anyhow",
  "bzip2",

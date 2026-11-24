@@ -42,6 +42,7 @@ are empty, so a run without a key or credentials does nothing harmful:
 | `KASHA_FLAKE` | flake id the manifests are filed under | emit skipped |
 | `KASHA_BIN` | path to the `kasha` binary | emit skipped |
 | `KASHA_GEN`, `KASHA_BRANCH`, `KASHA_ATTR` | manifest fields in `--paths-file` mode | emit skipped in that mode |
+| `KASHA_BOX_URL`, `KASHA_TOKEN` | push and emit to this box instead of S3; the box mirrors up to the remote cache later. Requires the emit variables below, or the script refuses | S3 push as above; one without the other is an error |
 
 `CACHE_STORE_PARAMS` is not applied when `CACHE_S3_URL` already names a `compression`. Set it to an empty string to push
 with Nix's own default.

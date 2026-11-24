@@ -14,6 +14,7 @@ use std::time::{Instant, SystemTime};
 
 use crate::manifest::Manifest;
 use crate::narinfo::NarInfo;
+use sha2::{Digest, Sha256};
 
 /// Readers of narinfos at boot. The scan waits on storage, not CPU: on a
 /// network block device with a cold page cache every file costs a round trip
@@ -444,13 +445,18 @@ impl Store {
     /// Parse one manifest file; `None` (logged) when it is not valid v3.
     /// Absent too when mirror-down removed it since it was listed.
     pub fn load_manifest(&self, path: &Path) -> Result<Option<Manifest>> {
+        Ok(self.load_manifest_raw(path)?.map(|(m, _)| m))
+    }
+
+    /// `load_manifest`, plus the bytes it parsed.
+    pub fn load_manifest_raw(&self, path: &Path) -> Result<Option<(Manifest, Vec<u8>)>> {
         let raw = match fs::read(path) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
         match Manifest::parse(&raw) {
-            Ok(m) => Ok(Some(m)),
+            Ok(m) => Ok(Some((m, raw))),
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "skipping bad manifest");
                 Ok(None)
@@ -510,16 +516,23 @@ impl Store {
             .unwrap_or(false)
     }
 
-    /// Confirmed fully present in the remote cache (manifest included).
-    pub fn mark_mirrored(&self, flake: &str, gen_id: &str) -> Result<()> {
-        fs::write(self.marker("mirrored", flake, gen_id)?, b"")?;
+    /// Confirmed fully present in the remote cache as the manifest revision
+    /// `raw`. The marker holds its SHA-256, so a manifest pushed again under
+    /// the same gen id counts as unmirrored until that revision goes up too.
+    pub fn mark_mirrored(&self, flake: &str, gen_id: &str, raw: &[u8]) -> Result<()> {
+        fs::write(self.marker("mirrored", flake, gen_id)?, Sha256::digest(raw))?;
         Ok(())
     }
 
     pub fn is_mirrored(&self, flake: &str, gen_id: &str) -> bool {
-        self.marker("mirrored", flake, gen_id)
-            .map(|p| p.exists())
-            .unwrap_or(false)
+        let read = |p: Result<PathBuf>| p.ok().and_then(|p| fs::read(p).ok());
+        match (
+            read(self.marker("mirrored", flake, gen_id)),
+            read(self.manifest_path(flake, gen_id)),
+        ) {
+            (Some(mark), Some(raw)) => mark[..] == Sha256::digest(&raw)[..],
+            _ => false,
+        }
     }
 
     /// Delete a manifest and its markers (mirror-down reflecting a remote
@@ -1153,7 +1166,8 @@ References: jspv3c5l2zx4kiwzhq0zgxcwp34cqifz-libiconv-115.100.1\n";
         s.mark_local_origin("znix", "main-abc-x").unwrap();
         assert!(s.is_local_origin("znix", "main-abc-x"));
         assert!(!s.is_mirrored("znix", "main-abc-x"));
-        s.mark_mirrored("znix", "main-abc-x").unwrap();
+        s.mark_mirrored("znix", "main-abc-x", &serde_json::to_vec(&m).unwrap())
+            .unwrap();
         assert!(s.is_mirrored("znix", "main-abc-x"));
         s.remove_manifest("znix", "main-abc-x").unwrap();
         assert!(!s.is_local_origin("znix", "main-abc-x"));

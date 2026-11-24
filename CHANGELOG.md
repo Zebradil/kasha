@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.18.0](https://github.com/Zebradil/kasha/compare/v0.17.0...v0.18.0) (2026-11-24)
+
+
+### Features
+
+* **cache-push:** push to a kasha box via KASHA_BOX_URL ([#160](https://github.com/Zebradil/kasha/issues/160)) ([00c15c5](https://github.com/Zebradil/kasha/commit/00c15c53bd176b96ec8657d671c18bd38ef40c8d))
+
+
+### Fixes
+
+* **deps:** update dependency @zebradil/docs-kit to v0.12.0 ([#152](https://github.com/Zebradil/kasha/issues/152)) ([14799d9](https://github.com/Zebradil/kasha/commit/14799d9c07c628bbb46978d22276d3537502ad0f))
+* **deps:** update rust crate rusty-s3 to 0.12.0 ([#153](https://github.com/Zebradil/kasha/issues/153)) ([236a41a](https://github.com/Zebradil/kasha/commit/236a41a41d61a9ef372fec094445561e7ffb12c1))
+
 ## [0.17.0](https://github.com/Zebradil/kasha/compare/v0.16.0...v0.17.0) (2026-11-16)
 
 

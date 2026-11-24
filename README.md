@@ -169,6 +169,11 @@ nix-store --query --requisites ./result \
 Generations pushed this way are tracked as local-origin: mirror-up copies everything the remote lacks, and the box never
 GCs them until their manifest is confirmed present in the remote cache.
 
+`kasha-cache-push` does the same when given `KASHA_BOX_URL` and `KASHA_TOKEN`: it pushes and emits to the box instead of
+S3 and returns once the box has the paths, leaving the upload to the remote cache to mirror-up (within
+`KASHA_SYNC_INTERVAL`). It passes the token to `nix copy` through a temporary `--option netrc-file`, which nix honours
+only for a trusted user.
+
 ## GC
 
 - **Box sweep** runs in-process on a timer: retain the `N` newest generations in each `(flake, branch, attr)` group, by

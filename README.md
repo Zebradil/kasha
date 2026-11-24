@@ -171,8 +171,8 @@ GCs them until their manifest is confirmed present in the remote cache.
 
 `kasha-cache-push` does the same when given `KASHA_BOX_URL` and `KASHA_TOKEN`: it pushes and emits to the box instead of
 S3 and returns once the box has the paths, leaving the upload to the remote cache to mirror-up (within
-`KASHA_SYNC_INTERVAL`). It passes the token to `nix copy` through a temporary `--option netrc-file`, which nix honours
-only for a trusted user.
+`KASHA_SYNC_INTERVAL`). It passes the token to `nix copy` through a temporary `--option netrc-file`. Box mode refuses to
+push without manifest emission set up, since the box mirrors up only paths a manifest lists.
 
 ## GC
 

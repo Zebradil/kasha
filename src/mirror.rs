@@ -236,10 +236,12 @@ impl Mirror<'_> {
             {
                 continue;
             }
-            let Some(m) = self.store.load_manifest(&path)? else {
+            // One read serves the upload and the mirrored marker, so a
+            // manifest re-pushed mid-upload is not marked as mirrored.
+            let Some((m, raw)) = self.store.load_manifest_raw(&path)? else {
                 continue;
             };
-            match self.push_gen(&m) {
+            match self.push_gen(&m, &raw) {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::warn!(flake = m.flake, gen = m.gen_id, error = %e, "mirror-up deferred");
@@ -250,7 +252,7 @@ impl Mirror<'_> {
         Ok(pending)
     }
 
-    fn push_gen(&self, m: &Manifest) -> Result<()> {
+    fn push_gen(&self, m: &Manifest, manifest_raw: &[u8]) -> Result<()> {
         let gaps = self.store.gaps(m);
         anyhow::ensure!(
             gaps.is_empty(),
@@ -287,9 +289,10 @@ impl Mirror<'_> {
             tracing::info!(hash, "mirrored up");
         }
         // Manifest last: readers/GC only see complete generations.
-        let raw = std::fs::read(self.store.manifest_path(&m.flake, &m.gen_id)?)?;
-        self.remote.put(&manifest_key(&m.flake, &m.gen_id), &raw)?;
-        self.store.mark_mirrored(&m.flake, &m.gen_id)?;
+        self.remote
+            .put(&manifest_key(&m.flake, &m.gen_id), manifest_raw)?;
+        self.store
+            .mark_mirrored(&m.flake, &m.gen_id, manifest_raw)?;
         tracing::info!(flake = m.flake, gen = m.gen_id, "generation mirrored up");
         Ok(())
     }
@@ -642,6 +645,54 @@ References: \n"
         remote.delete("roots/znix/local-1-x.json").unwrap();
         m.down().unwrap();
         assert_eq!(store.manifest_files().unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn up_mirrors_a_manifest_pushed_again_under_a_mirrored_gen() {
+        let (sk, pk) = keypair();
+        let keys = [pk];
+        let dir = tmp();
+        let store = Store::open(&dir).unwrap();
+        let remote = FakeRemote::default();
+        let put = |c: char, name: &str| {
+            let (h, i, n) = object(&sk, c, name);
+            store.put_nar(&format!("{h}.nar.xz"), &n[..]).unwrap();
+            store
+                .put_narinfo(&NarInfo::parse(&i).unwrap(), i.as_bytes())
+                .unwrap();
+            format!("/nix/store/{h}-{name}")
+        };
+        let a = put('a', "pkg-a");
+        let b = put('b', "pkg-b");
+        let push = |paths: &[&str]| {
+            let mbytes = manifest("local-3-x", "feature", paths);
+            store
+                .put_manifest(&Manifest::parse(&mbytes).unwrap(), &mbytes)
+                .unwrap();
+            store.mark_local_origin("znix", "local-3-x").unwrap();
+            mbytes
+        };
+        let m = mirror(&store, &remote, &keys);
+
+        // A partial build first, then the full one under the same gen id.
+        push(&[&a]);
+        assert_eq!(m.up().unwrap(), 0);
+        assert!(store.is_mirrored("znix", "local-3-x"));
+        let full = push(&[&a, &b]);
+        assert!(!store.is_mirrored("znix", "local-3-x"));
+
+        assert_eq!(m.up().unwrap(), 0);
+        assert!(store.is_mirrored("znix", "local-3-x"));
+        assert!(
+            remote
+                .keys()
+                .contains(&format!("{}.narinfo", store_hash_of(&b)))
+        );
+        assert_eq!(
+            remote.get("roots/znix/local-3-x.json").unwrap().unwrap(),
+            full
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

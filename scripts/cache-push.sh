@@ -25,7 +25,9 @@ set -euo pipefail
 # Push to a kasha box instead of S3 (both set, or neither): the box accepts the
 # push at LAN speed and its mirror-up uploads the generation to the remote cache
 # afterwards, so the caller does not wait for that upload. CACHE_S3_URL and the
-# AWS credentials are then unused.
+# AWS credentials are then unused. Box mode also requires manifest emission
+# (KASHA_FLAKE, KASHA_BIN, and KASHA_GEN/BRANCH/ATTR with --paths-file): the box
+# mirrors up only paths a manifest lists.
 #   KASHA_BOX_URL             box base URL, e.g. https://box.lan
 #   KASHA_TOKEN               box write token (netrc password for `nix copy`,
 #                             bearer token for `kasha emit`)
@@ -132,13 +134,20 @@ fi
 
 # Extra `nix copy` arguments; only box mode sets any.
 copy_opts=()
+target_url=""
 if [[ -n "${KASHA_BOX_URL:-}" || -n "${KASHA_TOKEN:-}" ]]; then
   if [[ -z "${KASHA_BOX_URL:-}" || -z "${KASHA_TOKEN:-}" ]]; then
     echo "::error::Box push needs both KASHA_BOX_URL and KASHA_TOKEN." >&2
     exit 1
   fi
+  if [[ -z "${KASHA_FLAKE:-}" || -z "${KASHA_BIN:-}" ]] \
+    || [[ -n "$paths_file" && ( -z "${KASHA_GEN:-}" || -z "${KASHA_BRANCH:-}" || -z "${KASHA_ATTR:-}" ) ]]; then
+    echo "::error::Box push needs manifest emission (KASHA_FLAKE, KASHA_BIN; KASHA_GEN, KASHA_BRANCH, KASHA_ATTR with --paths-file): without a manifest the box never mirrors the paths up." >&2
+    exit 1
+  fi
   target_url="$KASHA_BOX_URL"
   # netrc matches the bare host name: drop the scheme, then path or query, then port.
+  # shortcut: a bracketed IPv6 host is cut at its first colon; parse brackets if a box needs one.
   box_host="${KASHA_BOX_URL#*://}"
   box_host="${box_host%%[/?]*}"
   box_host="${box_host%%:*}"
@@ -147,7 +156,6 @@ if [[ -n "${KASHA_BOX_URL:-}" || -n "${KASHA_TOKEN:-}" ]]; then
     umask 077
     printf 'machine %s login nix password %s\n' "$box_host" "$KASHA_TOKEN" > "$netrc"
   )
-  # Honoured only for a trusted user, or a single-user install.
   copy_opts=(--option netrc-file "$netrc")
 elif [[ -z "${CACHE_S3_URL:-}" ]]; then
   echo "CACHE_S3_URL not set — skipping remote push."
@@ -165,7 +173,7 @@ else
   target_url="$CACHE_S3_URL"
 fi
 
-if [[ -n "${target_url:-}" ]]; then
+if [[ -n "$target_url" ]]; then
   # `compression` is a BinaryCacheStore setting, so it travels only as a URL query parameter —
   # `--option compression zstd` is silently ignored. Applied to the push URL alone: `kasha emit`
   # below takes the plain URL, since store settings mean nothing to a manifest PUT.
@@ -193,9 +201,13 @@ fi
 # those paths, it never expands or realizes anything itself.
 if [[ "${pushed:-}" == 1 && -n "${KASHA_FLAKE:-}" && -n "${KASHA_BIN:-}" ]]; then
   sanitize() { printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '-'; }
+  # A box takes the manifest at <base>/roots/…, so its URL loses any query;
+  # an s3:// URL keeps its query, which carries the endpoint and region.
+  emit_url="$target_url"
+  [[ -n "${KASHA_BOX_URL:-}" ]] && emit_url="${target_url%%\?*}"
   emit_manifest() { # $1=gen id, $2=branch, $3=attr; stdin=closure paths
     "$KASHA_BIN" emit --flake "$KASHA_FLAKE" --gen "$1" --branch "$2" --attr "$3" \
-      --to "$target_url" > /dev/null
+      --to "$emit_url" > /dev/null
   }
 
   if [[ -n "$paths_file" ]]; then

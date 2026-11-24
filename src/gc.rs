@@ -963,7 +963,7 @@ References: \n"
 
         // Once mirrored, the guard lifts; 'e' is still newest in its group
         // so it stays retained by count.
-        store.mark_mirrored("znix", "local-1-x").unwrap();
+        store.mark_mirrored("znix", "local-1-x", &mb).unwrap();
         let r = box_sweep(&store, now, Duration::ZERO, false).unwrap();
         assert!(r.deleted.is_empty());
         let _ = std::fs::remove_dir_all(dir);

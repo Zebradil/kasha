@@ -61,17 +61,24 @@ inputs:
     default: ''
   s3-url:
     description: >
-      S3 URL the manifest JSON is PUT to (e.g. s3://my-cache-bucket or
-      s3://my-bucket?region=eu-central-1). This is `kasha emit --to`, independent of wherever the
-      caller pushed the actual store paths — they must be the same cache for the manifest to mean
+      Where the manifest is published: an S3 URL the manifest JSON is PUT to (e.g.
+      s3://my-cache-bucket or s3://my-bucket?region=eu-central-1), or an http(s):// kasha box URL,
+      which takes `kasha-token`. This is `kasha emit --to`, independent of wherever the caller
+      pushed the actual store paths — they must be the same cache for the manifest to mean
       anything, but this action does not verify that.
     required: true
   aws-access-key-id:
-    description: AWS access key ID for the S3 PUT of the manifest.
-    required: true
+    description: AWS access key ID for the S3 PUT of the manifest. Unused for a box URL.
+    required: false
+    default: ''
   aws-secret-access-key:
-    description: AWS secret access key for the S3 PUT of the manifest.
-    required: true
+    description: AWS secret access key for the S3 PUT of the manifest. Unused for a box URL.
+    required: false
+    default: ''
+  kasha-token:
+    description: The box's write token, required when `s3-url` is an http(s):// box URL.
+    required: false
+    default: ''
   extra-substituters:
     description: >
       Substituters to resolve the kasha binary from, defaulting to kasha's own cache. Applied to
@@ -179,6 +186,7 @@ runs:
         S3_URL: ${{ inputs.s3-url }}
         AWS_ACCESS_KEY_ID: ${{ inputs.aws-access-key-id }}
         AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
+        KASHA_TOKEN: ${{ inputs.kasha-token }}
         PATHS_FILE: ${{ inputs.paths-file }}
       run: |
         set -euo pipefail

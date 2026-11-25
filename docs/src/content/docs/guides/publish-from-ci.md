@@ -80,6 +80,9 @@ published build:
     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 ```
 
+For a closure pushed to a box rather than to S3, pass the box URL as `s3-url` and its write token as `kasha-token`
+instead of the AWS credentials. The box mirrors the generation up to its remote cache.
+
 `branch` defaults to `pr` on pull request events and to `GITHUB_REF_NAME` otherwise, and `gen` to
 `<branch>-<7-char sha>-<attr>`, both sanitized to `A-Za-z0-9_.-`. All pull requests share the `pr` branch because
 retention keeps a group's newest generation until the group goes stale: one group per pull request would pin a closure

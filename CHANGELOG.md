@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/Zebradil/kasha/compare/v0.18.0...v0.19.0) (2026-11-25)
+
+
+### Features
+
+* **emit-manifest:** publish to a kasha box with kasha-token ([#163](https://github.com/Zebradil/kasha/issues/163)) ([3a898ed](https://github.com/Zebradil/kasha/commit/3a898ed39bcf75d7ede7255393466e485db7a4c5))
+
 ## [0.18.0](https://github.com/Zebradil/kasha/compare/v0.17.0...v0.18.0) (2026-11-24)
 
 

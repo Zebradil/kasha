@@ -206,7 +206,7 @@
                 ];
               }
               ''
-                actionlint -color ${./.github/workflows}/*.yml
+                actionlint -config-file ${./.github/actionlint.yaml} -color ${./.github/workflows}/*.yml
                 touch $out
               '';
         }

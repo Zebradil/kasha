@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@4051cac72e577a0903ecbcee2ffedb4e9f6ac9f1 # v3.1.0
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@a5b2fc6d96564331945420d60cd884aa71f47277 # v3.2.0
         with:
           # kasha's own remote cache, read side. Plain public S3 reads, so
           # this works for fork pull requests too — `vars` are exposed to
@@ -67,8 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Homelab runner pod: builds on daddy's remote store (nix-ci reads the pod's
+          # NIX_CI_STORE) and pushes to the kasha box on the LAN, which mirrors up to R2.
           - system: x86_64-linux
-            runner: ubuntu-latest
+            runner: homelab
+            box: true
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
           - system: aarch64-darwin
@@ -79,21 +82,41 @@ jobs:
         with:
           # The parent commit, for the release check below.
           fetch-depth: 2
-      - uses: zebradil/nix-ci/.github/actions/setup-nix@4051cac72e577a0903ecbcee2ffedb4e9f6ac9f1 # v3.1.0
+      # Where this leg publishes, or nothing. Homelab jobs push to the box from `push` events
+      # only: unlike the hosted legs, a same-repo PR on homelab publishes nothing, which keeps
+      # the box's write token out of PR jobs.
+      - name: Pick cache
+        id: cache
+        env:
+          BOX: ${{ matrix.box || '' }}
+          EVENT: ${{ github.event_name }}
+          BOX_URL: ${{ vars.KASHA_BOX_URL }}
+          S3_URL: ${{ vars.CACHE_S3_URL }}
+        run: |
+          if [[ -n "$BOX" ]]; then
+            if [[ "$EVENT" == push ]]; then
+              echo "url=$BOX_URL" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "$PUSH_TO_CACHE" == true ]]; then
+            echo "url=$S3_URL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: zebradil/nix-ci/.github/actions/setup-nix@a5b2fc6d96564331945420d60cd884aa71f47277 # v3.2.0
         with:
           extra-substituters: ${{ vars.KASHA_CACHE_URL }}
           extra-trusted-public-keys: ${{ vars.KASHA_CI_PUBLIC_KEY }}
-          signing-key: ${{ env.PUSH_TO_CACHE == 'true' && secrets.KASHA_CI_SIGNING_KEY || '' }}
+          signing-key: ${{ steps.cache.outputs.url && secrets.KASHA_CI_SIGNING_KEY || '' }}
 
       - id: build
-        uses: zebradil/nix-ci/.github/actions/build@4051cac72e577a0903ecbcee2ffedb4e9f6ac9f1 # v3.1.0
+        uses: zebradil/nix-ci/.github/actions/build@a5b2fc6d96564331945420d60cd884aa71f47277 # v3.2.0
         with:
           # checks.<system>.build is packages.<system>.kasha-bin, so building the
           # check set publishes the consumable binary as a side effect of testing
           # it — no separate push step, and no way for the tested artefact and the
           # served one to drift apart.
           attr: checks.${{ matrix.system }}
-          cache-s3-url: ${{ env.PUSH_TO_CACHE == 'true' && vars.CACHE_S3_URL || '' }}
+          cache-s3-url: ${{ steps.cache.outputs.url }}
+          cache-token: ${{ steps.cache.outputs.url && matrix.box && secrets.KASHA_BOX_TOKEN || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
           # The manifest is published below with emit-manifest from the commit
@@ -136,7 +159,8 @@ jobs:
           # bare `checks` would give both matrix legs the same id and let whichever
           # finishes last overwrite the other's manifest.
           attr: checks.${{ matrix.system }}
-          s3-url: ${{ vars.CACHE_S3_URL }}
+          s3-url: ${{ steps.cache.outputs.url }}
+          kasha-token: ${{ matrix.box && secrets.KASHA_BOX_TOKEN || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
 
@@ -166,6 +190,7 @@ jobs:
           paths-file: ${{ steps.build.outputs.paths-file }}
           attr: checks.${{ matrix.system }}
           branch: ${{ steps.release.outputs.tag }}
-          s3-url: ${{ vars.CACHE_S3_URL }}
+          s3-url: ${{ steps.cache.outputs.url }}
+          kasha-token: ${{ matrix.box && secrets.KASHA_BOX_TOKEN || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}

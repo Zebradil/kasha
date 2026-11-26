@@ -1,0 +1,3 @@
+self-hosted-runner:
+  # ARC scale set on the homelab cluster (myks-homelab prototypes/arc-homelab).
+  labels: [homelab]

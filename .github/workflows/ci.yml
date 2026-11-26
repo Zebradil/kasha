@@ -69,8 +69,13 @@ jobs:
         include:
           # Homelab runner pod: builds on daddy's remote store (nix-ci reads the pod's
           # NIX_CI_STORE) and pushes to the kasha box on the LAN, which mirrors up to R2.
+          # Fork pull requests stay on a hosted runner. That is routing, not a boundary: a fork
+          # can edit this file, so the real gate is the repository's approval requirement for
+          # all outside contributors' workflow runs.
           - system: x86_64-linux
-            runner: homelab
+            runner: >-
+              ${{ github.event.pull_request.head.repo.full_name != github.repository
+                  && github.event_name == 'pull_request' && 'ubuntu-latest' || 'homelab' }}
             box: true
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
@@ -161,6 +166,9 @@ jobs:
           attr: checks.${{ matrix.system }}
           s3-url: ${{ steps.cache.outputs.url }}
           kasha-token: ${{ matrix.box && secrets.KASHA_BOX_TOKEN || '' }}
+          # The box already holds the kasha-bin this run pushed; the public cache has it only
+          # after mirror-up, which waits for this very manifest.
+          extra-substituters: ${{ vars.KASHA_CACHE_URL }} ${{ matrix.box && vars.KASHA_BOX_URL || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}
 
@@ -192,5 +200,8 @@ jobs:
           branch: ${{ steps.release.outputs.tag }}
           s3-url: ${{ steps.cache.outputs.url }}
           kasha-token: ${{ matrix.box && secrets.KASHA_BOX_TOKEN || '' }}
+          # The box already holds the kasha-bin this run pushed; the public cache has it only
+          # after mirror-up, which waits for this very manifest.
+          extra-substituters: ${{ vars.KASHA_CACHE_URL }} ${{ matrix.box && vars.KASHA_BOX_URL || '' }}
           aws-access-key-id: ${{ secrets.KASHA_CI_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.KASHA_CI_SECRET_ACCESS_KEY }}

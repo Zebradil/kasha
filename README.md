@@ -232,3 +232,5 @@ macOS builds are not published — CI has no darwin runner. `nix build .#kasha` 
   stays xz ([ADR-0015](docs/adr/0015-reencode-stored-nars-as-zstd.md)).
 - Mirror-up filtering (push everything the remote lacks).
 - mDNS discovery and localhost selection shim.
+
+<!-- fork PR test for the homelab runners, not to be merged -->
